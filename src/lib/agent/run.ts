@@ -13,7 +13,7 @@ import { dayOf } from "@/lib/calendar-view";
 import { searchPostings } from "@/lib/job-search";
 import { credentialsFor, loadJobSearchConfig, requestContext, type JobSearchConfig } from "@/lib/job-search/config";
 import { JobSearchError } from "@/lib/job-search/errors";
-import { postingKey, postingText, type FoundPosting, type SearchQuery } from "@/lib/job-search/search";
+import { postingKey, postingText, type FoundPosting } from "@/lib/job-search/search";
 import { startJob, type JobContext } from "@/lib/jobs/runner";
 import { logServerError } from "@/lib/log";
 import { saveScore } from "@/lib/posting-scores";
@@ -30,7 +30,7 @@ import { agentDraftJob, draftJobKey } from "./draft";
 import { reconcileInterruptedRuns, recordRunEnd, recordSourceRequest, reserveRun } from "./runs";
 import { listAgentSearches } from "./searches";
 import { withAgentScanLock } from "./scan-lock";
-import type { SavedAgentSearch } from "./search";
+import { agentSearchSetupProblem, type SavedAgentSearch } from "./search";
 
 // One run: collect every enabled recurring search, then fairly evaluate
 // new postings under shared score/draft limits. It never sends anything.
@@ -52,9 +52,6 @@ export type AgentScanResult = z.infer<typeof agentScanResultSchema>;
 
 const stopped = (message: string): AgentScanResult => ({ found: 0, fresh: 0, scored: 0, drafted: 0, skipped: 0, message });
 
-/** Whether a search is complete enough to run: keywords and a country. */
-export const agentQueryReady = (query: SearchQuery) => Boolean(query.keywords.trim() && query.country);
-
 /** Why the agent can't run at all, in words, or null when it's set up. */
 export async function agentSetupProblem(): Promise<string | null> {
   const [searches, config] = await Promise.all([listAgentSearches(), loadJobSearchConfig()]);
@@ -62,11 +59,8 @@ export async function agentSetupProblem(): Promise<string | null> {
 }
 
 async function setupProblemFor(searches: readonly SavedAgentSearch[], config: JobSearchConfig): Promise<string | null> {
-  if (!searches.length) return "Add what to look for in Settings → Job agent first.";
-  const queries = searches.filter((search) => search.enabled).map((search) => search.query);
-  if (!queries.length) return "Enable an Agent search in Settings → Job agent first.";
-  if (queries.some((query) => !query.keywords.trim())) return "Add what to look for in Settings → Job agent first.";
-  if (queries.some((query) => !query.country)) return "Choose a country for the search in Settings → Job agent first.";
+  const searchProblem = agentSearchSetupProblem(searches);
+  if (searchProblem) return searchProblem;
   if (!(await isAiConfigured())) return "Choose an AI provider in Settings → AI provider first.";
   if (!config.source) return "Choose a job source in Settings → Job search first.";
   // It searches on its own, which the BA's terms forbid most clearly (#223).
@@ -140,7 +134,7 @@ async function scan(manual: boolean, context: JobContext, now: Date, requestNow:
   // Keep this explicit server-side guard before admission as well as setup.
   if (!source || source === "ARBEITSAGENTUR") return stopped("Choose JSearch or Adzuna in Settings → Job search for the job agent.");
   const credentials = credentialsFor(config, source);
-  const run = await reserveRun(now, manual, searches.length);
+  const run = await reserveRun(now, manual, searches.length, await lastKnownTimeZone());
   if (typeof run === "string") return stopped(run);
   const results: AgentSearchRun[] = [];
   const pages: FoundPosting[][] = [];

@@ -63,7 +63,6 @@ describe("stored settings", () => {
       adzunaKeyEnc: null,
       arbeitsagenturAcceptedAt: null,
       agentEnabled: false,
-      agentQuery: { keywords: "", place: "", country: "", radiusKm: 25, remoteOnly: false, postedWithin: "any" },
       agentHour: 7,
       agentMinScore: 70,
       agentMaxScores: 15,
@@ -145,12 +144,10 @@ describe("stored settings", () => {
 });
 
 describe("the job agent's settings (E16)", () => {
-  it("reads its search and runs as JSON, and values out of range as the defaults", () => {
-    const query = { keywords: "Data scientist", place: "Berlin", country: "de", radiusKm: 50, remoteOnly: true, postedWithin: "week" } as const;
+  it("reads runs as JSON, ignores legacy queries and defaults out-of-range values", () => {
     const runs = [{ at: "2026-10-20T07:00:00.000Z", manual: false, message: "2 new postings scored." }];
-    const rows = Object.entries({ agentQuery: query, agentRuns: runs, agentEnabled: true, agentHour: 9 }).map(([key, value]) => ({ key, value: settingValue(value)! }));
-    expect(rows).toContainEqual({ key: "agentQuery", value: JSON.stringify(query) });
-    expect(settingsFromRows(rows)).toMatchObject({ agentQuery: query, agentRuns: runs, agentEnabled: true, agentHour: 9 });
+    const rows = Object.entries({ agentRuns: runs, agentEnabled: true, agentHour: 9 }).map(([key, value]) => ({ key, value: settingValue(value)! }));
+    expect(settingsFromRows(rows)).toMatchObject({ agentRuns: runs, agentEnabled: true, agentHour: 9 });
 
     const odd = settingsFromRows([
       { key: "agentQuery", value: "{not json" },
@@ -160,7 +157,8 @@ describe("the job agent's settings (E16)", () => {
       { key: "agentMaxScores", value: "0" },
       { key: "agentMaxDrafts", value: "11" },
     ]);
-    expect(odd).toMatchObject({ agentQuery: { keywords: "", country: "" }, agentRuns: [], agentHour: 7, agentMinScore: 70, agentMaxScores: 15, agentMaxDrafts: 3 });
+    expect(odd).not.toHaveProperty("agentQuery");
+    expect(odd).toMatchObject({ agentRuns: [], agentHour: 7, agentMinScore: 70, agentMaxScores: 15, agentMaxDrafts: 3 });
   });
 });
 

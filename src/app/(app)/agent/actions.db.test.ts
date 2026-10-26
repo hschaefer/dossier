@@ -3,9 +3,10 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SearchQuery } from "@/lib/job-search/search";
 import { loadSettings, saveSettings } from "@/lib/settings-data";
 import { setStatus } from "@/lib/status-actions";
+import { getSession } from "@/lib/auth/session";
 import { createTestClient, resetDatabase } from "@/test/db";
 
-import { approveAgentDraft, dismissAgentCandidate, prepareAgentDraft, restoreAgentCandidate, runAgentNow, saveAgentSettings } from "./actions";
+import { approveAgentDraft, dismissAgentCandidate, prepareAgentDraft, restoreAgentCandidate, runAgentNow, saveAgentSettings, saveRecurringSearch, deleteRecurringSearch, moveRecurringSearch } from "./actions";
 
 const db = vi.hoisted(() => ({ client: undefined as ReturnType<typeof createTestClient> | undefined }));
 vi.mock("@/lib/prisma", async () => {
@@ -14,9 +15,10 @@ vi.mock("@/lib/prisma", async () => {
   return { prisma: db.client };
 });
 vi.mock("@/lib/auth/session", () => ({
-  getSession: async () => ({ persistent: false, issuedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) }),
+  getSession: vi.fn(async () => ({ persistent: false, issuedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) })),
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("@/lib/time-zone", () => ({ lastKnownTimeZone: async () => "Europe/Berlin" }));
 vi.mock("@/lib/jobs/runner", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/jobs/runner")>()),
   startJob: vi.fn(async () => "new-run"),
@@ -39,7 +41,8 @@ const query: SearchQuery = { keywords: "Data scientist", place: "", country: "de
 beforeEach(async () => {
   Object.assign(setup, { ai: true, source: "JSEARCH" });
   await resetDatabase(prisma());
-  await saveSettings({ agentEnabled: true, agentQuery: query });
+  await saveSettings({ agentEnabled: true });
+  await prisma().agentSearch.create({ data: { name: "My search", query } });
 });
 afterAll(() => prisma().$disconnect());
 
@@ -58,9 +61,10 @@ describe("Run now (E16-4)", () => {
   it("says what's missing before it starts", async () => {
     await saveSettings({ agentEnabled: false });
     expect(await runAgentNow({})).toEqual({ ok: false, error: "Turn the job agent on in Settings → Job agent first." });
-    await saveSettings({ agentEnabled: true, agentQuery: { ...query, keywords: "" } });
+    await saveSettings({ agentEnabled: true });
+    await prisma().agentSearch.deleteMany();
     expect(await runAgentNow({})).toMatchObject({ ok: false, error: "Add what to look for in Settings → Job agent first." });
-    await saveSettings({ agentQuery: query });
+    await prisma().agentSearch.create({ data: { name: "My search", query } });
     setup.ai = false;
     expect(await runAgentNow({})).toMatchObject({ ok: false, error: "Choose an AI provider in Settings → AI provider first." });
     setup.ai = true;
@@ -74,6 +78,14 @@ describe("Run now (E16-4)", () => {
     expect(await runAgentNow({})).toEqual({ ok: false, error: "The agent ran less than an hour ago. Try again in 40 minutes." });
     await saveSettings({ agentRuns: [at(70), at(200), at(400)].map((time) => ({ at: time, manual: true, message: null })) });
     expect(await runAgentNow({})).toMatchObject({ ok: false, error: expect.stringMatching(/^The agent needs 1 source request/) });
+  });
+
+  it("formats quota eligibility in the same user timezone as the Agent view", async () => {
+    const at = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await saveSettings({ agentRuns: [{ at, manual: true, message: "Done", sourceRequests: 3 }] });
+    const result = await runAgentNow({});
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("(Europe/Berlin)") });
+    expect(result).not.toMatchObject({ error: expect.stringMatching(/\d{4}-\d{2}-\d{2}T/) });
   });
 });
 
@@ -126,12 +138,64 @@ describe("the drafts' actions (E16-5)", () => {
 
 describe("saving the agent's settings (E16-7)", () => {
   it("saves each change, and turns on only with keywords and a country", async () => {
-    await saveSettings({ agentEnabled: false, agentQuery: { ...query, keywords: "" } });
-    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: false, error: "Type what the agent should look for before turning it on." });
-    expect(await saveAgentSettings({ enabled: true, query: { ...query, country: "" } })).toEqual({ ok: false, error: "Choose a country for the search before turning the agent on." });
-    expect(await saveAgentSettings({ enabled: true, query })).toEqual({ ok: true, data: null });
+    await saveSettings({ agentEnabled: false });
+    await prisma().agentSearch.deleteMany();
+    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: false, error: "Add what to look for in Settings → Job agent first." });
+    const search = await prisma().agentSearch.create({ data: { name: "My search", query: { ...query, country: "" } } });
+    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: false, error: "Choose a country for “My search” in Settings → Job agent first." });
+    await prisma().agentSearch.update({ where: { id: search.id }, data: { query } });
+    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: true, data: null });
     expect(await saveAgentSettings({ hour: 9, minScore: 80, autoDraft: true, maxDrafts: 5 })).toEqual({ ok: true, data: null });
-    expect(await loadSettings()).toMatchObject({ agentEnabled: true, agentQuery: query, agentHour: 9, agentMinScore: 80, agentAutoDraft: true, agentMaxDrafts: 5, agentMaxScores: 15 });
+    expect(await loadSettings()).toMatchObject({ agentEnabled: true, agentHour: 9, agentMinScore: 80, agentAutoDraft: true, agentMaxDrafts: 5, agentMaxScores: 15 });
     expect(await saveAgentSettings({ maxScores: 31 })).toMatchObject({ ok: false });
+  });
+
+  it("distinguishes disabled searches from missing searches and names an incomplete enabled search", async () => {
+    await prisma().agentSearch.updateMany({ data: { enabled: false } });
+    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: false, error: "Enable an Agent search in Settings → Job agent first." });
+    await prisma().agentSearch.create({ data: { name: "Missing country", query: { ...query, country: "" } } });
+    expect(await saveAgentSettings({ enabled: true })).toEqual({ ok: false, error: "Choose a country for “Missing country” in Settings → Job agent first." });
+  });
+});
+
+describe("recurring search actions", () => {
+  it("authenticates every search mutation before changing data", async () => {
+    const first = await prisma().agentSearch.findFirstOrThrow();
+    for (const mutate of [
+      () => saveRecurringSearch({ name: "New", query }),
+      () => deleteRecurringSearch({ id: first.id }),
+      () => moveRecurringSearch({ id: first.id, direction: "down" }),
+    ]) {
+      vi.mocked(getSession).mockResolvedValueOnce(null);
+      expect(await mutate()).toMatchObject({ ok: false });
+    }
+    expect(await prisma().agentSearch.count()).toBe(1);
+  });
+
+  it("rejects missing countries on enabled searches, invalid directions and legacy query settings", async () => {
+    expect(await saveRecurringSearch({ name: "No country", query: { ...query, country: "" } })).toEqual({ ok: false, error: "Choose a country for “No country”." });
+    expect(await saveRecurringSearch({ name: "Disabled draft", query: { ...query, country: "" }, enabled: false })).toMatchObject({ ok: true });
+    // Untrusted callers bypass TypeScript; schema boundaries must still reject them.
+    const invalidMove: unknown = { id: "one", direction: "sideways" };
+    const legacySettings: unknown = { query };
+    expect(await Reflect.apply(moveRecurringSearch, undefined, [invalidMove])).toMatchObject({ ok: false });
+    expect(await Reflect.apply(saveAgentSettings, undefined, [legacySettings])).toMatchObject({ ok: false });
+  });
+
+  it("validates input, caps disabled searches too, edits by stable id and moves atomically", async () => {
+    const first = await prisma().agentSearch.findFirstOrThrow();
+    expect(await saveRecurringSearch({ name: " ", query })).toMatchObject({ ok: false });
+    const second = await saveRecurringSearch({ name: "Second", query, enabled: false, sort: 1 });
+    expect(second).toMatchObject({ ok: true });
+    if (!second.ok) throw new Error("create failed");
+    expect(await saveRecurringSearch({ id: second.data.id, name: "Renamed", query, enabled: true, sort: 1 })).toMatchObject({ ok: true, data: { id: second.data.id, name: "Renamed" } });
+    expect(await moveRecurringSearch({ id: second.data.id, direction: "up" })).toMatchObject({ ok: true, data: [{ id: second.data.id }, { id: first.id }] });
+    await saveRecurringSearch({ name: "Third", query });
+    expect(await saveRecurringSearch({ name: "Fourth", query })).toEqual({ ok: false, error: "Keep at most three Agent searches." });
+    expect(await saveRecurringSearch({ id: "missing", name: "Gone", query })).toEqual({ ok: false, error: "That Agent search no longer exists." });
+    expect(await moveRecurringSearch({ id: "missing", direction: "down" })).toEqual({ ok: false, error: "That Agent search no longer exists." });
+    expect(await deleteRecurringSearch({ id: second.data.id })).toEqual({ ok: true, data: null });
+    expect(await prisma().agentSearch.count()).toBe(2);
+    expect(await loadSettings()).not.toHaveProperty("agentQuery");
   });
 });

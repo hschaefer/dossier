@@ -38,3 +38,17 @@ export async function deleteAgentSearch(id: string, db: PrismaClient = prisma): 
     await tx.agentSearch.deleteMany({ where: { id } });
   });
 }
+
+/** Move against the current order under the same lock as create/delete/import. */
+export async function moveAgentSearch(id: string, direction: "up" | "down", db: PrismaClient = prisma): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await lockAgentSearches(tx);
+    const rows = await tx.agentSearch.findMany({ orderBy: [{ sort: "asc" }, { createdAt: "asc" }, { id: "asc" }] });
+    const index = rows.findIndex((row) => row.id === id);
+    if (index < 0) throw new ActionError("That Agent search no longer exists.");
+    const target = index + (direction === "up" ? -1 : 1);
+    if (target < 0 || target >= rows.length) return;
+    [rows[index], rows[target]] = [rows[target], rows[index]];
+    for (const [sort, row] of rows.entries()) await tx.agentSearch.update({ where: { id: row.id }, data: { sort } });
+  });
+}

@@ -2,9 +2,7 @@ import "server-only";
 
 import { AgentCandidateStatus, JobStatus } from "@/generated/prisma/enums";
 import { formatDateTime } from "@/lib/dates";
-import { loadJobSearchConfig } from "@/lib/job-search/config";
-import { countryName } from "@/lib/job-search/countries";
-import { describeSearch, postedAgo, type JobSource } from "@/lib/job-search/search";
+import { postedAgo, type JobSource } from "@/lib/job-search/search";
 import { SOURCE_INFO } from "@/lib/job-search/sources";
 import { prisma } from "@/lib/prisma";
 import { loadSettings } from "@/lib/settings-data";
@@ -49,17 +47,15 @@ export type AgentView = {
   /** Recurring search collection, including disabled searches, in run order. */
   searches: SavedAgentSearch[];
   sourceRequestsUsed: number;
-  /** ISO timestamp for whole-run admission; UI should format in the user's
-   * timezone rather than presenting the fallback quota error's UTC text. */
-  nextEligibleAt: string;
+  nextEligibility: string;
+  timeZone: string;
+  searchHistory: (AgentSearchRun & { at: string; batchMessage: string | null })[];
   searchResults: AgentSearchRun[];
   enabled: boolean;
   autoDraft: boolean;
   minScore: number;
   maxScores: number;
   maxDrafts: number;
-  /** "Data scientist in Berlin (25 km), Germany · via JSearch", or null without a search. */
-  search: string | null;
   /** Why it can't run: no search, AI provider, source or key; null when it's set up. */
   setupProblem: string | null;
   /** Which settings section fixes it. */
@@ -101,9 +97,8 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
   // Even when quota prevents Run now, expose a hard-crashed run's outcome.
   // A live scan owns this lock, so viewing it never marks it interrupted.
   await withAgentScanLock(async () => reconcileInterruptedRuns());
-  const [settings, config, timeZone, candidates, draftJobs, runJobs, searches] = await Promise.all([
+  const [settings, timeZone, candidates, draftJobs, runJobs, searches] = await Promise.all([
     loadSettings(),
-    loadJobSearchConfig(),
     lastKnownTimeZone(),
     prisma.agentCandidate.findMany({
       where: { status: { in: [AgentCandidateStatus.SCORED, AgentCandidateStatus.DRAFTING, AgentCandidateStatus.DRAFTED] } },
@@ -119,11 +114,6 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
   ]);
   const draftJob = new Map(draftJobs.map((job) => [job.key?.replace(/^agent-candidate:/, ""), job.id]));
 
-  const query = searches.find((search) => search.enabled)?.query;
-  const source: JobSource | null = config.source;
-  const search = query?.keywords.trim()
-    ? `${describeSearch(query, countryName(query.country) || query.country.toUpperCase())}${source ? ` · via ${SOURCE_INFO[source].name}` : ""}`
-    : null;
   const setupProblem = await agentSetupProblem();
 
   const view = (candidate: (typeof candidates)[number]): AgentCandidateView => ({
@@ -156,14 +146,19 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
   return {
     searches,
     sourceRequestsUsed: sourceRequestsInPastDay(settings.agentRuns, now),
-    nextEligibleAt: eligible.toISOString(),
+    nextEligibility: eligible > now ? formatDateTime(eligible, timeZone, now) : "Now",
+    timeZone,
+    searchHistory: searches.flatMap((search) => {
+      const run = settings.agentRuns.find((run) => run.searches?.some((result) => result.searchId === search.id));
+      const result = run?.searches?.find((result) => result.searchId === search.id);
+      return run && result ? [{ ...result, at: formatDateTime(new Date(run.at), timeZone, now), batchMessage: run.message }] : [];
+    }),
     searchResults: last?.searches ?? [],
     enabled: settings.agentEnabled,
     autoDraft: settings.agentAutoDraft,
     minScore: settings.agentMinScore,
     maxScores: settings.agentMaxScores,
     maxDrafts: settings.agentMaxDrafts,
-    search,
     setupProblem,
     setupSection: setupProblem ? sectionOf(setupProblem) : null,
     limitReached: eligible > now,

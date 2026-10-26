@@ -111,7 +111,8 @@ const context = (abort?: AbortController): JobContext & { steps: string[] } => {
 beforeEach(async () => {
   await resetDatabase(prisma());
   Object.assign(fake, { postings: page, searches: 0, source: "JSEARCH", ai: true, failOn: null, onScore: () => {} });
-  await saveSettings({ agentEnabled: true, agentQuery: query });
+  await saveSettings({ agentEnabled: true });
+  await prisma().agentSearch.create({ data: { name: "My search", query } });
 });
 afterAll(() => prisma().$disconnect());
 
@@ -290,11 +291,12 @@ describe("runAgentScan (E16-3)", () => {
     const stop = async (manual = false) => (await runAgentScan({ manual }, context(), now)).message;
     await saveSettings({ agentEnabled: false });
     expect(await stop()).toBe("The job agent is off.");
-    await saveSettings({ agentEnabled: true, agentQuery: { ...query, keywords: " " } });
+    await saveSettings({ agentEnabled: true });
+    await prisma().agentSearch.deleteMany();
     expect(await stop()).toBe("Add what to look for in Settings → Job agent first.");
-    await saveSettings({ agentQuery: { ...query, country: "" } });
-    expect(await stop()).toBe("Choose a country for the search in Settings → Job agent first.");
-    await saveSettings({ agentQuery: query });
+    const search = await prisma().agentSearch.create({ data: { name: "My search", query: { ...query, country: "" } } });
+    expect(await stop()).toBe("Choose a country for “My search” in Settings → Job agent first.");
+    await prisma().agentSearch.update({ where: { id: search.id }, data: { query } });
     fake.ai = false;
     expect(await stop()).toBe("Choose an AI provider in Settings → AI provider first.");
     fake.ai = true;
@@ -320,7 +322,7 @@ describe("runAgentScan (E16-3)", () => {
     expect(fake.searches).toBe(3);
     expect(await prisma().job.count()).toBe(0);
     const fourth = await runAgentScan({ manual: true }, context(), new Date(now.getTime() + 6 * hour));
-    expect(fourth.message).toMatch(/^The agent needs 1 source request, but may use only 3 in 24 hours. Next eligible: 2026-10-21T08:00:/);
+    expect(fourth.message).toBe("The agent needs 1 source request, but may use only 3 in 24 hours. Next eligible: Wed 21 Oct, 08:00 (UTC).");
     expect(fake.searches).toBe(3);
     // A day after the first, one may go again.
     const firstAttempt = (await loadSettings()).agentRuns.at(-1)!.sourceRequestAts![0];

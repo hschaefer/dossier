@@ -3,7 +3,7 @@ import { z } from "zod";
 import { EMPTY_QUERY, searchQuerySchema, type SearchQuery } from "@/lib/job-search/search";
 
 /** Fixed product and source-budget cap, shared by forms and server writes. */
-export const MAX_AGENT_SEARCHES = 3;
+export { MAX_AGENT_SEARCHES } from "./limits";
 export const agentSearchInputSchema = z.object({
   name: z.string().trim().min(1, "Give the search a name.").max(100),
   query: searchQuerySchema.refine((query) => Boolean(query.keywords), "Add what to look for."),
@@ -12,6 +12,18 @@ export const agentSearchInputSchema = z.object({
 });
 export type AgentSearchInput = z.input<typeof agentSearchInputSchema>;
 export type SavedAgentSearch = { id: string; name: string; query: SearchQuery; enabled: boolean; sort: number; createdAt: Date; updatedAt: Date };
+
+/** Shared setup wording for the engine and the master enable action. */
+export function agentSearchSetupProblem(searches: readonly SavedAgentSearch[]): string | null {
+  if (!searches.length) return "Add what to look for in Settings → Job agent first.";
+  const enabled = searches.filter((search) => search.enabled);
+  if (!enabled.length) return "Enable an Agent search in Settings → Job agent first.";
+  const empty = enabled.find((search) => !search.query.keywords.trim());
+  if (empty) return `Add what to look for in “${empty.name}” in Settings → Job agent first.`;
+  const missingCountry = enabled.find((search) => !search.query.country);
+  if (missingCountry) return `Choose a country for “${missingCountry.name}” in Settings → Job agent first.`;
+  return null;
+}
 
 /** Same recovery rules as the SQL upgrade: keep meaningful keywords, repair
  * optional fields and truncate the place rather than lose the whole search. */

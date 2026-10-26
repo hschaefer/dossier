@@ -4,7 +4,7 @@ import { buildExport } from "@/lib/data-export";
 import { ActionError } from "@/lib/action";
 import { importExport, parseExport } from "@/lib/data-import";
 import { EMPTY_QUERY, type FoundPosting } from "@/lib/job-search/search";
-import { loadSettings, saveSettings } from "@/lib/settings-data";
+import { loadSettings } from "@/lib/settings-data";
 import { postingStates } from "@/lib/postings";
 import * as postingsService from "@/lib/postings";
 import { createTestClient, resetDatabase } from "@/test/db";
@@ -200,20 +200,8 @@ describe("recurring Agent search storage", () => {
     expect((await buildExport(client)).agentSearches).toEqual(data.agentSearches);
   });
 
-  it("keeps the legacy single-search screen/executor working without recreating the setting", async () => {
-    await saveSettings({ agentQuery: input.query }, client);
-    expect((await loadSettings()).agentQuery).toMatchObject({ keywords: "Designer", country: "de" });
-    expect(await client.setting.count({ where: { key: "agentQuery" } })).toBe(0);
-    await saveSettings({ agentQuery: EMPTY_QUERY }, client);
-    expect(await client.agentSearch.count()).toBe(0);
-  });
-
-  it("never runs a disabled search through the bridge or deletes a search from a multi-search collection", async () => {
-    const first = await saveAgentSearch({ ...input, enabled: false }, undefined, client);
-    expect((await loadSettings()).agentQuery).toEqual(EMPTY_QUERY);
-    const second = await saveAgentSearch({ ...input, query: { ...input.query, keywords: "Enabled" } }, undefined, client);
-    expect((await loadSettings()).agentQuery.keywords).toBe("Enabled");
-    await expect(saveSettings({ agentEnabled: true, agentQuery: EMPTY_QUERY }, client)).rejects.toBeInstanceOf(ActionError);
-    expect((await listAgentSearches(client)).map((search) => search.id)).toEqual([first.id, second.id]);
+  it("does not expose a legacy query through settings", async () => {
+    await client.setting.create({ data: { key: "agentQuery", value: JSON.stringify(input.query) } });
+    expect(await loadSettings()).not.toHaveProperty("agentQuery");
   });
 });

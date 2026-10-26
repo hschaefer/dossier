@@ -6,41 +6,39 @@ import { z } from "zod";
 import { AgentCandidateStatus } from "@/generated/prisma/enums";
 import { agentDraftJob, approveCandidate, dismissCandidate, draftJobKey, restoreCandidate } from "@/lib/agent/draft";
 import { AGENT_JOB_KEY, agentScanJob } from "@/lib/agent/jobs";
-import { agentQueryReady, agentSetupProblem } from "@/lib/agent/run";
+import { agentSetupProblem } from "@/lib/agent/run";
 import { runLimitProblem } from "@/lib/agent/runs";
-import { listAgentSearches } from "@/lib/agent/searches";
+import { agentSearchInputSchema, agentSearchSetupProblem } from "@/lib/agent/search";
+import { deleteAgentSearch, listAgentSearches, moveAgentSearch, saveAgentSearch } from "@/lib/agent/searches";
 import { action, ActionError } from "@/lib/action";
-import { safeLink, searchQuerySchema } from "@/lib/job-search/search";
+import { safeLink } from "@/lib/job-search/search";
 import { findUnfinishedJobs, startJob } from "@/lib/jobs/runner";
 import { prisma } from "@/lib/prisma";
 import { loadSettings, saveSettings } from "@/lib/settings-data";
+import { lastKnownTimeZone } from "@/lib/time-zone";
 
 // The Agent screen's actions (E16). Nothing here ever sends anything:
 // approving only makes a draft a normal Draft application.
 
 /**
- * Settings → Job agent (E16-7): each change saves at once. Turning the agent
- * on needs a search with keywords and a country.
+ * Shared settings save at once. Search edits use the collection actions below.
  */
 export const saveAgentSettings = action(
   z.object({
     enabled: z.boolean().optional(),
-    query: searchQuerySchema.optional(),
     hour: z.number().int().min(0).max(23).optional(),
     minScore: z.number().int().min(0).max(100).optional(),
     maxScores: z.number().int().min(1).max(30).optional(),
     maxDrafts: z.number().int().min(0).max(10).optional(),
     autoDraft: z.boolean().optional(),
-  }),
+  }).strict(),
   async (changes) => {
-    const searches = (await listAgentSearches()).filter((search) => search.enabled);
-    const query = changes.query ?? searches[0]?.query;
-    if (changes.enabled && (!query || !agentQueryReady(query) || searches.some((search) => !agentQueryReady(search.query)))) {
-      throw new ActionError(query?.keywords.trim() ? "Choose a country for the search before turning the agent on." : "Type what the agent should look for before turning it on.");
+    if (changes.enabled) {
+      const problem = agentSearchSetupProblem(await listAgentSearches());
+      if (problem) throw new ActionError(problem);
     }
     await saveSettings({
       agentEnabled: changes.enabled,
-      agentQuery: changes.query,
       agentHour: changes.hour,
       agentMinScore: changes.minScore,
       agentMaxScores: changes.maxScores,
@@ -48,13 +46,38 @@ export const saveAgentSettings = action(
       agentAutoDraft: changes.autoDraft,
     });
     revalidatePath("/agent");
+    revalidatePath("/settings");
     return null;
   },
 );
 
+const searchId = z.string().min(1).max(100);
+export const saveRecurringSearch = action(
+  agentSearchInputSchema.extend({ id: searchId.optional() }).strict(),
+  async ({ id, ...input }) => {
+    if (input.enabled && !input.query.country) throw new ActionError(`Choose a country for “${input.name}”.`);
+    const search = await saveAgentSearch(input, id);
+    revalidatePath("/agent");
+    revalidatePath("/settings");
+    return search;
+  },
+);
+export const deleteRecurringSearch = action(z.object({ id: searchId }).strict(), async ({ id }) => {
+  await deleteAgentSearch(id);
+  revalidatePath("/agent");
+  revalidatePath("/settings");
+  return null;
+});
+export const moveRecurringSearch = action(z.object({ id: searchId, direction: z.enum(["up", "down"]) }).strict(), async ({ id, direction }) => {
+  await moveAgentSearch(id, direction);
+  revalidatePath("/agent");
+  revalidatePath("/settings");
+  return listAgentSearches();
+});
+
 /**
- * Run now (E16-4): one more run, at most once an hour after the previous
- * one and within the daily limit. A run already queued or running is
+ * Run all now: at most once an hour after the previous run and only when
+ * the whole enabled batch fits the rolling request quota. An unfinished job is
  * reused rather than started again.
  */
 export const runAgentNow = action(z.object({}), async () => {
@@ -65,7 +88,7 @@ export const runAgentNow = action(z.object({}), async () => {
   const [unfinished] = await findUnfinishedJobs(AGENT_JOB_KEY);
   if (unfinished) return { jobId: unfinished.id, reused: true };
   const requests = (await listAgentSearches()).filter((search) => search.enabled).length;
-  const limit = runLimitProblem(settings.agentRuns, new Date(), { manual: true, requests });
+  const limit = runLimitProblem(settings.agentRuns, new Date(), { manual: true, requests, timeZone: await lastKnownTimeZone() });
   if (limit) throw new ActionError(limit);
   const jobId = await startJob(agentScanJob, { manual: true }, { key: AGENT_JOB_KEY });
   revalidatePath("/agent");

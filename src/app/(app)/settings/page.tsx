@@ -5,6 +5,7 @@ import { isAiConfigured, loadAiConfig, loadAiSettingsView } from "@/lib/ai/confi
 import { jobSearchView, loadJobSearchConfig } from "@/lib/job-search/config";
 import { COUNTRIES } from "@/lib/job-search/countries";
 import { loadSearch } from "@/lib/posting-searches";
+import { listAgentSearches } from "@/lib/agent/searches";
 import { providerOption } from "@/lib/ai/provider-options";
 import { lastNightlyBackup } from "@/lib/backup-schedule";
 import { backupsDir } from "@/lib/backups";
@@ -56,14 +57,14 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
         <AgentSection
           initial={{
             enabled: settings.agentEnabled,
-            // With no search of its own yet, it starts from the last one in Find jobs.
-            query: settings.agentQuery.keywords.trim() ? settings.agentQuery : ((await loadSearch())?.query ?? settings.agentQuery),
             hour: settings.agentHour,
             minScore: settings.agentMinScore,
             maxScores: settings.agentMaxScores,
             maxDrafts: settings.agentMaxDrafts,
             autoDraft: settings.agentAutoDraft,
           }}
+          searches={await listAgentSearches()}
+          suggestedQuery={(await loadSearch())?.query}
           source={(await loadJobSearchConfig()).source}
           aiReady={await isAiConfigured()}
           countries={COUNTRIES}

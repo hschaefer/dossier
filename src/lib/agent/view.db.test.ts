@@ -31,15 +31,29 @@ const candidate = (externalId: string, score: number, data: Record<string, unkno
 
 beforeEach(async () => {
   await resetDatabase(prisma());
+  await prisma().agentSearch.create({ data: { name: "My search", query: { keywords: "Data scientist", place: "Berlin", country: "de", radiusKm: 25, remoteOnly: false, postedWithin: "any" } } });
   await saveSettings({
     agentEnabled: true,
-    agentQuery: { keywords: "Data scientist", place: "Berlin", country: "de", radiusKm: 25, remoteOnly: false, postedWithin: "any" },
     agentRuns: [{ at: "2026-10-20T05:00:00Z", manual: false, message: "2 new postings are waiting for a look." }],
   });
 });
 afterAll(() => prisma().$disconnect());
 
 describe("the Agent screen's data (E16-6)", () => {
+  it("finds each search's latest retained outcome even when absent from the last batch, formatting quota in the user's zone", async () => {
+    const first = await prisma().agentSearch.findFirstOrThrow();
+    const second = await prisma().agentSearch.create({ data: { name: "Disabled", query: first.query!, enabled: false, sort: 1 } });
+    const result = { searchId: second.id, searchName: "Old name", found: 7, fresh: 2, error: null };
+    await saveSettings({ agentRuns: [
+      { at: "2026-10-20T09:00:00Z", manual: true, message: "Failed", sourceRequests: 2, searches: [{ ...result, searchId: first.id, error: "Offline" }] },
+      { at: "2026-10-20T05:00:00Z", manual: false, message: "Done", sourceRequests: 1, searches: [result] },
+    ] });
+    expect(await loadAgentView(now)).toMatchObject({
+      sourceRequestsUsed: 3, nextEligibility: "Wed 21 Oct, 07:00", timeZone: "Europe/Berlin", limitReached: true,
+      searchHistory: [expect.objectContaining({ searchId: first.id, error: "Offline", at: "Tue 20 Oct, 11:00" }), { ...result, at: "Tue 20 Oct, 07:00" }],
+    });
+  });
+
   it("surfaces interrupted runs and their conservative budget cost before another scan can run", async () => {
     await saveSettings({ agentRuns: [{ at: now.toISOString(), manual: false, message: null, sourceRequests: 3 }] });
     const view = await loadAgentView(now);
@@ -74,10 +88,9 @@ describe("the Agent screen's data (E16-6)", () => {
     expect(view.belowMinimum.map((entry) => entry.title)).toEqual(["Posting low"]);
     expect(view.scored[1]).toMatchObject({ facts: "Berlin · Remote", origin: "Posted 2 days ago · via LinkedIn on JSearch", draftJobId: job.id, searches: [{ searchId: search.id, searchName: "Original search name" }] });
     expect(view).toMatchObject({
-      search: "Data scientist · Berlin, 25 km · via JSearch",
       searches: [expect.objectContaining({ id: search.id, enabled: true })],
       sourceRequestsUsed: 1,
-      nextEligibleAt: now.toISOString(),
+      nextEligibility: "Now",
       setupProblem: null,
       limitReached: false,
       lastRun: { at: "Tue 20 Oct, 07:00", message: "2 new postings are waiting for a look." },
@@ -88,14 +101,13 @@ describe("the Agent screen's data (E16-6)", () => {
   });
 
   it("says what's missing, and when the day's runs are used up", async () => {
+    await prisma().agentSearch.deleteMany();
     await saveSettings({
       agentEnabled: false,
-      agentQuery: { keywords: "", place: "", country: "", radiusKm: 25, remoteOnly: false, postedWithin: "any" },
       agentRuns: ["09:30", "08:00", "06:00"].map((time) => ({ at: `2026-10-20T${time}:00Z`, manual: true, message: null })),
     });
     expect(await loadAgentView(now)).toMatchObject({
       enabled: false,
-      search: null,
       setupProblem: "Add what to look for in Settings → Job agent first.",
       setupSection: "agent",
       limitReached: true,

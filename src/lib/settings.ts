@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import { AiProvider, Creativity, DateFormat, PaperSize, Tone } from "@/generated/prisma/enums";
-import { EMPTY_QUERY, JOB_SOURCES, JSEARCH_HOSTS, searchQuerySchema } from "@/lib/job-search/search";
+import { JOB_SOURCES, JSEARCH_HOSTS } from "@/lib/job-search/search";
 import { startupsRefreshSchema } from "@/lib/startups/types";
+import { AGENT_MAX_SOURCE_REQUESTS_PER_DAY } from "@/lib/agent/limits";
 
 /** Date styles for documents (SET-6), labelled with an example as in the prototype. */
 export const DATE_FORMATS: readonly { value: DateFormat; label: string }[] = [
@@ -103,9 +104,9 @@ export const agentRunSchema = z.object({
   /** What the run ended with, for the Agent screen; null while it runs. */
   message: z.string().nullable(),
   /** Slots reserved together before dispatch. Legacy runs consumed one slot. */
-  sourceRequests: z.number().int().min(1).max(3).optional(),
+  sourceRequests: z.number().int().min(1).max(AGENT_MAX_SOURCE_REQUESTS_PER_DAY).optional(),
   /** Each reserved slot's timestamp, advanced immediately before dispatch. */
-  sourceRequestAts: z.array(z.iso.datetime()).min(1).max(3).optional(),
+  sourceRequestAts: z.array(z.iso.datetime()).min(1).max(AGENT_MAX_SOURCE_REQUESTS_PER_DAY).optional(),
   searches: z.array(agentSearchRunSchema).optional(),
 });
 export type AgentRun = z.infer<typeof agentRunSchema>;
@@ -171,8 +172,6 @@ export const settingsSchema = z.object({
   // Job agent (E16): recurring searches, run once a day. Off until turned on.
   // It asks the source in Settings → Job search, with its key.
   agentEnabled: flag(false),
-  /** Legacy single-search form bridge only; execution reads AgentSearch. */
-  agentQuery: json(searchQuerySchema).catch(EMPTY_QUERY),
   /** The hour of the day it runs, in the user's time zone. */
   agentHour: z.coerce.number().int().min(0).max(23).catch(7),
   /** Postings scored below this stay out of the queue. */
