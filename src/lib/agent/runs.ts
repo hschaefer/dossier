@@ -1,55 +1,101 @@
 import "server-only";
 
-import { AGENT_RUNS_KEPT, type AgentRun } from "@/lib/settings";
-import { loadSettings, saveSettings } from "@/lib/settings-data";
+import { prisma } from "@/lib/prisma";
+import { AGENT_RUNS_KEPT, settingsFromRows, type AgentRun, type AgentSearchRun } from "@/lib/settings";
 
-// The job agent's runs (E16), kept in Settings rather than as their Job rows,
-// which the task-data sweep deletes after "Keep task data for": the limits
-// below must hold whatever that is set to.
-
-/** At most this many runs in any 24 hours, scheduled or Run now. */
-export const AGENT_MAX_RUNS_PER_DAY = 3;
-/** Run now waits this long after the previous run of either kind. */
+/** Source-request slots, not runs. Failed requests consume slots too. */
+export const AGENT_MAX_SOURCE_REQUESTS_PER_DAY = 3;
 export const AGENT_MANUAL_INTERVAL_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** The runs in the 24 hours before `now`, newest first. */
-export const runsInPastDay = (runs: readonly AgentRun[], now: Date) =>
-  runs.filter((run) => now.getTime() - Date.parse(run.at) < DAY_MS);
+const requestTimes = (run: AgentRun): string[] =>
+  Array.from({ length: run.sourceRequests ?? 1 }, (_, index) => run.sourceRequestAts?.[index] ?? run.at);
 
-/** Why no run may start now, in words, or null when one may. */
-export function runLimitProblem(runs: readonly AgentRun[], now: Date, { manual }: { manual: boolean }): string | null {
-  const recent = runsInPastDay(runs, now);
-  if (recent.length >= AGENT_MAX_RUNS_PER_DAY) {
-    const free = new Date(Math.min(...recent.map((run) => Date.parse(run.at))) + DAY_MS);
-    return `The agent has run ${AGENT_MAX_RUNS_PER_DAY} times in the past 24 hours, as many as it may. ${waitText(free.getTime() - now.getTime())}`;
+export const sourceRequestsInPastDay = (runs: readonly AgentRun[], now: Date) =>
+  runs.flatMap(requestTimes).filter((at) => Date.parse(at) + DAY_MS > now.getTime()).length;
+
+/** Whole-run admission: wait until all enabled searches fit, never run a subset. */
+export function nextSourceBudgetAt(runs: readonly AgentRun[], now: Date, requests = 1): Date {
+  const recent = runs.flatMap(requestTimes).map(Date.parse).filter((at) => at + DAY_MS > now.getTime()).toSorted((a, b) => a - b);
+  let used = sourceRequestsInPastDay(runs, now);
+  // Expire oldest slots one at a time until the ENTIRE requested batch fits.
+  // At exactly timestamp + 24h a slot is free (the rolling window is open
+  // at its older boundary), including the last request of a slow prior run.
+  for (const at of recent) {
+    if (used + requests <= AGENT_MAX_SOURCE_REQUESTS_PER_DAY) break;
+    used -= 1;
+    if (used + requests <= AGENT_MAX_SOURCE_REQUESTS_PER_DAY) return new Date(at + DAY_MS);
   }
+  return now;
+}
+
+/** Call only while owning the session scan lock: null messages can otherwise
+ * belong to a live scan. Retain all reservations after a crash, even unused
+ * ones, because source dispatch and database writes cannot be one transaction.
+ */
+export async function reconcileInterruptedRuns(): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(621746002)::text`;
+    const runs = settingsFromRows(await tx.setting.findMany({ where: { key: "agentRuns" } })).agentRuns;
+    if (!runs.some((run) => run.message === null)) return;
+    for (const run of runs) {
+      if (run.message !== null) continue;
+      const requests = run.sourceRequests ?? 1;
+      run.message = `The agent scan was interrupted. All ${requests} reserved source ${requests === 1 ? "request still counts" : "requests still count"} toward the 24-hour limit, including any not sent.`;
+    }
+    await tx.setting.update({ where: { key: "agentRuns" }, data: { value: JSON.stringify(runs) } });
+  });
+}
+
+export function runLimitProblem(runs: readonly AgentRun[], now: Date, { manual, requests = 1 }: { manual: boolean; requests?: number }): string | null {
+  const free = nextSourceBudgetAt(runs, now, requests);
+  if (free > now) return `The agent needs ${requests} source ${requests === 1 ? "request" : "requests"}, but may use only 3 in 24 hours. Next eligible: ${free.toISOString()}.`;
   const last = runs[0];
-  if (manual && last) {
-    const wait = Date.parse(last.at) + AGENT_MANUAL_INTERVAL_MS - now.getTime();
-    if (wait > 0) return `The agent ran less than an hour ago. ${waitText(wait)}`;
+  if (manual && last && Date.parse(last.at) + AGENT_MANUAL_INTERVAL_MS > now.getTime()) {
+    const minutes = Math.ceil((Date.parse(last.at) + AGENT_MANUAL_INTERVAL_MS - now.getTime()) / 60_000);
+    return `The agent ran less than an hour ago. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
   }
   return null;
 }
 
-/** "Try again in 25 minutes." */
-function waitText(ms: number): string {
-  const minutes = Math.max(1, Math.ceil(ms / 60_000));
-  if (minutes < 60) return `Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
-  const hours = Math.ceil(minutes / 60);
-  return `Try again in ${hours} ${hours === 1 ? "hour" : "hours"}.`;
+/** Atomic, durable reservation. A crash conservatively spends reserved slots.
+ * Dispatch advances each slot to the actual attempt time. The scheduler
+ * wakes at expiry so a daily run doesn't drift by a tick per day.
+ */
+export async function reserveRun(now: Date, manual: boolean, requests: number): Promise<AgentRun | string> {
+  if (!Number.isInteger(requests) || requests < 1 || requests > 3) throw new Error("Invalid Agent source reservation");
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(621746002)::text`;
+    const runs = settingsFromRows(await tx.setting.findMany({ where: { key: "agentRuns" } })).agentRuns;
+    const problem = runLimitProblem(runs, now, { manual, requests });
+    if (problem) return problem;
+    const run: AgentRun = { at: now.toISOString(), manual, message: null, sourceRequests: requests, sourceRequestAts: Array(requests).fill(now.toISOString()), searches: [] };
+    const value = JSON.stringify([run, ...runs].slice(0, AGENT_RUNS_KEPT));
+    await tx.setting.upsert({ where: { key: "agentRuns" }, create: { key: "agentRuns", value }, update: { value } });
+    return run;
+  });
 }
 
-/** Records a run as it starts, before it asks the source, so a crash and a retry can't spend the quota twice. */
-export async function recordRunStart(now: Date, manual: boolean): Promise<AgentRun> {
-  const run: AgentRun = { at: now.toISOString(), manual, message: null };
-  const { agentRuns } = await loadSettings();
-  await saveSettings({ agentRuns: [run, ...agentRuns].slice(0, AGENT_RUNS_KEPT) });
-  return run;
+/** Persist immediately before dispatch, including requests that will fail. */
+export async function recordSourceRequest(run: AgentRun, index: number, now: Date): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(621746002)::text`;
+    const runs = settingsFromRows(await tx.setting.findMany({ where: { key: "agentRuns" } })).agentRuns;
+    const entry = runs.find((entry) => entry.at === run.at);
+    if (!entry || index < 0 || index >= (entry.sourceRequests ?? 1)) throw new Error("Agent source reservation no longer exists");
+    const times = requestTimes(entry);
+    times[index] = now.toISOString();
+    entry.sourceRequestAts = times;
+    await tx.setting.update({ where: { key: "agentRuns" }, data: { value: JSON.stringify(runs) } });
+  });
 }
 
-/** Notes what a run ended with, for the Agent screen. */
-export async function recordRunEnd(run: AgentRun, message: string): Promise<void> {
-  const { agentRuns } = await loadSettings();
-  await saveSettings({ agentRuns: agentRuns.map((entry) => (entry.at === run.at ? { ...entry, message } : entry)) });
+/** Update under the same lock as admission so concurrent writers can't lose slots. */
+export async function recordRunEnd(run: AgentRun, message: string | null, searches?: AgentSearchRun[]): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(621746002)::text`;
+    const runs = settingsFromRows(await tx.setting.findMany({ where: { key: "agentRuns" } })).agentRuns;
+    const value = JSON.stringify(runs.map((entry) => entry.at === run.at ? { ...entry, message, ...(searches ? { searches } : {}) } : entry));
+    await tx.setting.upsert({ where: { key: "agentRuns" }, create: { key: "agentRuns", value }, update: { value } });
+  });
 }

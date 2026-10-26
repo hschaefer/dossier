@@ -9,14 +9,21 @@ import { createTestClient, resetDatabase } from "@/test/db";
 
 import { MockProvider } from "../ai/providers/mock";
 
-import { agentDedupeKey } from "./candidates";
+import { agentDedupeKey, candidateData } from "./candidates";
 import { runAgentScan } from "./run";
+import { saveAgentSearch, listAgentSearches } from "./searches";
+import { reserveRun } from "./runs";
 
 const db = vi.hoisted(() => ({ client: undefined as ReturnType<typeof createTestClient> | undefined }));
 vi.mock("@/lib/prisma", async () => {
   const { createTestClient } = await import("@/test/db");
   db.client = createTestClient();
   return { prisma: db.client };
+});
+vi.mock("./scan-lock", async (original) => {
+  const { withAgentScanLock } = await original<typeof import("./scan-lock")>();
+  const { testDatabaseUrl } = await import("@/test/db");
+  return { withAgentScanLock: <T>(work: (signal: AbortSignal) => Promise<T>) => withAgentScanLock(work, testDatabaseUrl()) };
 });
 // Drafts are their own jobs; here it's enough to see them queued.
 vi.mock("@/lib/jobs/runner", async (importOriginal) => ({
@@ -46,12 +53,12 @@ vi.mock("@/lib/job-search", () => ({
   }),
 }));
 vi.mock("@/lib/job-search/config", () => ({
-  loadJobSearchConfig: async () => ({
+  loadJobSearchConfig: vi.fn(async () => ({
     source: fake.source,
     saved: true,
     jsearch: { key: "jsearch-key", host: "openwebninja", keyState: "set" },
     adzuna: { appId: "app", key: "adzuna-key", keyState: "set" },
-  }),
+  })),
   credentialsFor: () => ({ key: "jsearch-key", host: "openwebninja" }),
   requestContext: () => ({}),
 }));
@@ -109,6 +116,123 @@ beforeEach(async () => {
 afterAll(() => prisma().$disconnect());
 
 describe("runAgentScan (E16-3)", () => {
+  it.each(["ARBEITSAGENTUR", null] as const)("uses its validated source snapshot despite a concurrent switch to %s", async (source) => {
+    const { loadJobSearchConfig } = await import("@/lib/job-search/config");
+    const original = vi.mocked(loadJobSearchConfig).getMockImplementation()!;
+    vi.mocked(loadJobSearchConfig).mockClear();
+    vi.mocked(loadJobSearchConfig).mockImplementationOnce(async () => {
+      const config = await original();
+      fake.source = source;
+      return config;
+    });
+    expect((await runAgentScan({ manual: false }, context(), now)).scored).toBe(3);
+    expect(loadJobSearchConfig).toHaveBeenCalledTimes(1);
+    expect(fake.searches).toBe(1);
+    expect((await loadSettings()).agentRuns[0].sourceRequests).toBe(1);
+  });
+
+  it("distinguishes an all-disabled collection from no searches without consuming budget", async () => {
+    await prisma().agentSearch.updateMany({ data: { enabled: false } });
+    expect((await runAgentScan({ manual: true }, context(), now)).message).toBe("Enable an Agent search in Settings → Job agent first.");
+    expect((await loadSettings()).agentRuns).toEqual([]);
+    expect(fake.searches).toBe(0);
+  });
+
+  it("reconciles a crashed scan only after acquiring scan ownership, even when admission is refused", async () => {
+    await reserveRun(now, false, 3);
+    const result = await runAgentScan({ manual: true }, context(), new Date(now.getTime() + hour));
+    expect(result.message).toContain("needs 1 source request");
+    const runs = (await loadSettings()).agentRuns;
+    expect(runs).toHaveLength(1);
+    expect(runs[0].message).toContain("interrupted");
+    expect(runs[0].sourceRequests).toBe(3);
+    expect(fake.searches).toBe(0);
+  });
+  it("collects ordered searches sequentially, fairly scores unique candidates and shares the draft cap", async () => {
+    const { searchPostings } = await import("@/lib/job-search");
+    const [first] = await listAgentSearches();
+    const second = await saveAgentSearch({ name: "Second", query: { ...query, keywords: "Second query" }, sort: 1, enabled: true });
+    await saveAgentSearch({ name: "Disabled", query, sort: 2, enabled: false });
+    const shared = page[0];
+    const secondNew = posting("second", "Senior Second Designer", "2026-10-18T12:00:00Z");
+    vi.mocked(searchPostings).mockImplementationOnce(async (_source, _credentials, q, cursor) => {
+      expect(q).toEqual(query);
+      expect(cursor).toBeNull();
+      fake.searches++;
+      await Promise.resolve();
+      expect(fake.searches).toBe(1); // A parallel second dispatch would already have incremented it.
+      return { postings: [page[2], shared, page[1]], next: "page-2" };
+    }).mockImplementationOnce(async (_source, _credentials, q, cursor) => {
+      expect(q.keywords).toBe("Second query");
+      expect(cursor).toBeNull();
+      fake.searches++;
+      return { postings: [secondNew, shared], next: "page-2" };
+    });
+    const scores: string[] = [];
+    fake.onScore = (title) => { expect(fake.searches).toBe(2); scores.push(title); };
+    await saveSettings({ agentMaxScores: 3, agentAutoDraft: true, agentMaxDrafts: 1 });
+    const result = await runAgentScan({ manual: false }, context(), now);
+    expect(scores).toEqual([shared.title, secondNew.title, page[1].title]);
+    expect(result).toMatchObject({ found: 5, fresh: 4, scored: 3, drafted: 1, skipped: 1 });
+    const candidate = await prisma().agentCandidate.findUniqueOrThrow({ where: { dedupeKey: agentDedupeKey(shared) } });
+    expect((await prisma().agentCandidateSearch.findMany({ where: { candidateId: candidate.id } })).map((link) => link.searchId).sort()).toEqual([first.id, second.id].sort());
+    expect((await loadSettings()).agentRuns[0]).toMatchObject({ sourceRequests: 2, searches: [{ searchName: "My search", found: 3, fresh: 3 }, { searchName: "Second", found: 2, fresh: 2 }] });
+  });
+
+  it("continues after an individual source error and keeps its durable result", async () => {
+    const { searchPostings } = await import("@/lib/job-search");
+    await saveAgentSearch({ name: "Second", query, sort: 1, enabled: true });
+    vi.mocked(searchPostings).mockRejectedValueOnce(new Error("socket hang up"));
+    const result = await runAgentScan({ manual: false }, context(), now);
+    expect(result.scored).toBe(3);
+    expect(result.message).toContain("My search: The job source couldn't be reached.");
+    expect((await loadSettings()).agentRuns[0]).toMatchObject({ sourceRequests: 2, searches: [{ found: 0, fresh: 0, error: expect.any(String) }, { found: 3, fresh: 3, error: null }] });
+    expect((await runAgentScan({ manual: true }, context(), new Date(now.getTime() + hour))).message).toContain("needs 2 source requests");
+  });
+
+  it("attributes existing candidates before dedupe, without restoring dismissed or Find jobs exclusions", async () => {
+    const kept = await prisma().agentCandidate.create({ data: candidateData(page[0], { score: 90, reasons: [], redFlags: [] }) });
+    const dismissed = await prisma().agentCandidate.create({ data: { source: "JSEARCH", externalId: "b", dedupeKey: agentDedupeKey(page[1]), status: "DISMISSED" } });
+    await prisma().posting.create({ data: { source: "JSEARCH", externalId: "c", savedAt: now } });
+    const second = await saveAgentSearch({ name: "Overlap", query, sort: 1, enabled: true });
+    const result = await runAgentScan({ manual: false }, context(), now);
+    expect(result).toMatchObject({ scored: 0, fresh: 0 });
+    const links = await prisma().agentCandidateSearch.findMany();
+    expect(links).toHaveLength(2);
+    expect(links.every((link) => link.candidateId === kept.id)).toBe(true);
+    expect(links.some((link) => link.searchId === second.id)).toBe(true);
+    expect(await prisma().agentCandidate.findUnique({ where: { id: dismissed.id } })).toEqual(dismissed);
+  });
+
+  it("prevents overlapping manual/scheduled scans while source dispatch is blocked", async () => {
+    const { searchPostings } = await import("@/lib/job-search");
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    vi.mocked(searchPostings).mockImplementationOnce(async () => { entered(); await blocked; return { postings: page, next: null }; });
+    const running = runAgentScan({ manual: false }, context(), now);
+    await started;
+    try {
+      expect((await runAgentScan({ manual: true }, context(), new Date(now.getTime() + hour))).message).toBe("An agent scan is already running.");
+      expect((await loadSettings()).agentRuns).toHaveLength(1);
+    } finally { release(); await running; }
+  });
+
+  it("doesn't execute a second scheduled job queued before the first one finished", async () => {
+    await runAgentScan({ manual: false }, context(), now);
+    expect((await runAgentScan({ manual: false }, context(), new Date(now.getTime() + hour))).message).toBe("The agent already ran today.");
+    expect(fake.searches).toBe(1);
+  });
+
+  it("excludes Bundesagentur for all enabled searches and manual Agent runs too", async () => {
+    await saveAgentSearch({ name: "Second", query, sort: 1, enabled: true });
+    fake.source = "ARBEITSAGENTUR";
+    expect((await runAgentScan({ manual: true }, context(), now)).message).toContain("doesn't search the Bundesagentur");
+    expect(fake.searches).toBe(0);
+    expect((await loadSettings()).agentRuns).toEqual([]);
+  });
+
   it("searches once, scores the new postings and keeps them, below the minimum too", async () => {
     const run = context();
     const result = await runAgentScan({ manual: false }, run, now);
@@ -125,7 +249,7 @@ describe("runAgentScan (E16-3)", () => {
     // Find jobs shows the scores too (#208).
     expect((await prisma().postingScore.findMany({ orderBy: { score: "desc" } })).map((row) => [row.externalId, row.score])).toEqual([["a", 90], ["b", 75], ["c", 40]]);
     // The run is on record, with how it ended.
-    expect((await loadSettings()).agentRuns).toEqual([{ at: now.toISOString(), manual: false, message: "2 new postings are waiting for a look." }]);
+    expect((await loadSettings()).agentRuns).toEqual([{ at: now.toISOString(), manual: false, message: "2 new postings are waiting for a look.", sourceRequests: 1, sourceRequestAts: [expect.any(String)], searches: [expect.objectContaining({ searchName: "My search", found: 3, fresh: 3, error: null })] }]);
   });
 
   it("scores the newest new postings first, up to the cap", async () => {
@@ -196,18 +320,20 @@ describe("runAgentScan (E16-3)", () => {
     expect(fake.searches).toBe(3);
     expect(await prisma().job.count()).toBe(0);
     const fourth = await runAgentScan({ manual: true }, context(), new Date(now.getTime() + 6 * hour));
-    expect(fourth.message).toBe("The agent has run 3 times in the past 24 hours, as many as it may. Try again in 18 hours.");
+    expect(fourth.message).toMatch(/^The agent needs 1 source request, but may use only 3 in 24 hours. Next eligible: 2026-10-21T08:00:/);
     expect(fake.searches).toBe(3);
     // A day after the first, one may go again.
-    await runAgentScan({ manual: true }, context(), new Date(now.getTime() + 24 * hour + 1));
+    const firstAttempt = (await loadSettings()).agentRuns.at(-1)!.sourceRequestAts![0];
+    await runAgentScan({ manual: true }, context(), new Date(Date.parse(firstAttempt) + 24 * hour));
     expect(fake.searches).toBe(4);
   });
 
   it("records the run before it asks the source, so a failing source still counts", async () => {
     const { searchPostings } = await import("@/lib/job-search");
     vi.mocked(searchPostings).mockRejectedValueOnce(new Error("socket hang up"));
-    await expect(runAgentScan({ manual: false }, context(), now)).rejects.toThrow("socket hang up");
-    expect((await loadSettings()).agentRuns).toEqual([{ at: now.toISOString(), manual: false, message: null }]);
+    const result = await runAgentScan({ manual: false }, context(), now);
+    expect(result.message).toContain("My search: The job source couldn't be reached.");
+    expect((await loadSettings()).agentRuns).toEqual([{ at: now.toISOString(), manual: false, message: result.message, sourceRequests: 1, sourceRequestAts: [expect.any(String)], searches: [expect.objectContaining({ found: 0, fresh: 0, error: "The job source couldn't be reached. Try again." })] }]);
   });
 
   it("goes on when one score fails, and says what failed when none worked", async () => {
@@ -226,8 +352,8 @@ describe("runAgentScan (E16-3)", () => {
     const abort = new AbortController();
     fake.onScore = () => abort.abort();
     const result = await runAgentScan({ manual: false }, context(abort), now);
-    expect(result.scored).toBeLessThanOrEqual(1);
-    expect(await prisma().agentCandidate.count()).toBeLessThanOrEqual(1);
+    expect(result.scored).toBe(0);
+    expect(await prisma().agentCandidate.count()).toBe(0);
   });
 
   it("queues drafts for the best new postings when auto-draft is on, up to the cap (#197)", async () => {

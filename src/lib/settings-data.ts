@@ -14,7 +14,7 @@ import { DEFAULT_BASE_THEME, settingsFromRows, settingValue, type SettingsData }
  */
 export async function loadSettings(): Promise<SettingsData> {
   const settings = settingsFromRows(await prisma.setting.findMany());
-  // Compatibility for the single-search screen/executor until they use the
+  // Compatibility for the single-search screen until it uses the
   // search service directly. Never migrate old settings at read time.
   const search = await prisma.agentSearch.findFirst({ where: { enabled: true }, orderBy: [{ sort: "asc" }, { createdAt: "asc" }, { id: "asc" }] });
   settings.agentQuery = search ? searchQuerySchema.parse(search.query) : EMPTY_QUERY;

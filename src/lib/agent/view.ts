@@ -9,16 +9,22 @@ import { SOURCE_INFO } from "@/lib/job-search/sources";
 import { prisma } from "@/lib/prisma";
 import { loadSettings } from "@/lib/settings-data";
 import { lastKnownTimeZone } from "@/lib/time-zone";
+import type { AgentSearchRun } from "@/lib/settings";
 
 import { stringsOf } from "./candidates";
 import { AGENT_JOB_KEY } from "./jobs";
 import { agentSetupProblem } from "./run";
-import { AGENT_MAX_RUNS_PER_DAY, runsInPastDay } from "./runs";
+import { nextSourceBudgetAt, reconcileInterruptedRuns, sourceRequestsInPastDay } from "./runs";
 import { nextAgentRun } from "./schedule";
+import { listAgentSearches } from "./searches";
+import type { SavedAgentSearch } from "./search";
+import { withAgentScanLock } from "./scan-lock";
 
 // What the Agent screen shows (E16-6).
 
 export type AgentCandidateView = {
+  /** Historical names survive renames/deletion; searchId can be null. */
+  searches: { searchId: string | null; searchName: string }[];
   id: string;
   title: string;
   company: string;
@@ -40,6 +46,13 @@ export type AgentCandidateView = {
 };
 
 export type AgentView = {
+  /** Recurring search collection, including disabled searches, in run order. */
+  searches: SavedAgentSearch[];
+  sourceRequestsUsed: number;
+  /** ISO timestamp for whole-run admission; UI should format in the user's
+   * timezone rather than presenting the fallback quota error's UTC text. */
+  nextEligibleAt: string;
+  searchResults: AgentSearchRun[];
   enabled: boolean;
   autoDraft: boolean;
   minScore: number;
@@ -85,30 +98,36 @@ const sectionOf = (problem: string): AgentView["setupSection"] =>
   problem.includes("AI provider") ? "ai" : problem.includes("Job search") ? "jobs" : "agent";
 
 export async function loadAgentView(now = new Date()): Promise<AgentView> {
-  const [settings, config, timeZone, candidates, draftJobs, runJobs] = await Promise.all([
+  // Even when quota prevents Run now, expose a hard-crashed run's outcome.
+  // A live scan owns this lock, so viewing it never marks it interrupted.
+  await withAgentScanLock(async () => reconcileInterruptedRuns());
+  const [settings, config, timeZone, candidates, draftJobs, runJobs, searches] = await Promise.all([
     loadSettings(),
     loadJobSearchConfig(),
     lastKnownTimeZone(),
     prisma.agentCandidate.findMany({
       where: { status: { in: [AgentCandidateStatus.SCORED, AgentCandidateStatus.DRAFTING, AgentCandidateStatus.DRAFTED] } },
       orderBy: [{ score: "desc" }, { createdAt: "desc" }],
+      include: { searches: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { searchId: true, searchName: true } } },
     }),
     prisma.job.findMany({
       where: { type: "agent-draft", status: { in: [JobStatus.QUEUED, JobStatus.RUNNING] } },
       select: { id: true, key: true },
     }),
     prisma.job.findMany({ where: { key: AGENT_JOB_KEY, status: { in: [JobStatus.QUEUED, JobStatus.RUNNING] } }, select: { id: true }, take: 1 }),
+    listAgentSearches(),
   ]);
   const draftJob = new Map(draftJobs.map((job) => [job.key?.replace(/^agent-candidate:/, ""), job.id]));
 
-  const query = settings.agentQuery;
+  const query = searches.find((search) => search.enabled)?.query;
   const source: JobSource | null = config.source;
-  const search = query.keywords.trim()
+  const search = query?.keywords.trim()
     ? `${describeSearch(query, countryName(query.country) || query.country.toUpperCase())}${source ? ` · via ${SOURCE_INFO[source].name}` : ""}`
     : null;
-  const setupProblem = await agentSetupProblem(query);
+  const setupProblem = await agentSetupProblem();
 
   const view = (candidate: (typeof candidates)[number]): AgentCandidateView => ({
+    searches: candidate.searches,
     id: candidate.id,
     title: candidate.title.trim() || "Untitled posting",
     company: candidate.company.trim(),
@@ -131,8 +150,14 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
   const drafts = candidates.filter((candidate) => candidate.status === AgentCandidateStatus.DRAFTED && candidate.applicationId).map(view);
   const waiting = candidates.filter((candidate) => candidate.status !== AgentCandidateStatus.DRAFTED);
   const last = settings.agentRuns[0];
+  const requests = searches.filter((search) => search.enabled).length;
+  const eligible = nextSourceBudgetAt(settings.agentRuns, now, Math.max(1, requests));
 
   return {
+    searches,
+    sourceRequestsUsed: sourceRequestsInPastDay(settings.agentRuns, now),
+    nextEligibleAt: eligible.toISOString(),
+    searchResults: last?.searches ?? [],
     enabled: settings.agentEnabled,
     autoDraft: settings.agentAutoDraft,
     minScore: settings.agentMinScore,
@@ -141,9 +166,9 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
     search,
     setupProblem,
     setupSection: setupProblem ? sectionOf(setupProblem) : null,
-    limitReached: runsInPastDay(settings.agentRuns, now).length >= AGENT_MAX_RUNS_PER_DAY,
+    limitReached: eligible > now,
     lastRun: last ? { at: formatDateTime(new Date(last.at), timeZone, now), message: last.message } : null,
-    nextRun: settings.agentEnabled ? formatDateTime(nextAgentRun(now, settings.agentHour, timeZone, settings.agentRuns), timeZone, now) : null,
+    nextRun: settings.agentEnabled ? formatDateTime(nextAgentRun(now, settings.agentHour, timeZone, settings.agentRuns, requests), timeZone, now) : null,
     runJobId: runJobs[0]?.id ?? null,
     drafts,
     scored: waiting.filter((candidate) => candidate.score >= settings.agentMinScore).map(view),

@@ -21,6 +21,7 @@ vi.mock("./actions", () => ({
 }));
 
 const card = (id: string, score: number, extra: Partial<AgentCandidateView> = {}): AgentCandidateView => ({
+  searches: [],
   id,
   title: `Posting ${id}`,
   company: `Company ${id}`,
@@ -37,6 +38,10 @@ const card = (id: string, score: number, extra: Partial<AgentCandidateView> = {}
   ...extra,
 });
 const view: AgentView = {
+  searches: [],
+  sourceRequestsUsed: 0,
+  nextEligibleAt: "2026-10-20T07:00:00Z",
+  searchResults: [],
   enabled: true,
   autoDraft: false,
   minScore: 70,

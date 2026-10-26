@@ -8,6 +8,7 @@ import { agentDraftJob, approveCandidate, dismissCandidate, draftJobKey, restore
 import { AGENT_JOB_KEY, agentScanJob } from "@/lib/agent/jobs";
 import { agentQueryReady, agentSetupProblem } from "@/lib/agent/run";
 import { runLimitProblem } from "@/lib/agent/runs";
+import { listAgentSearches } from "@/lib/agent/searches";
 import { action, ActionError } from "@/lib/action";
 import { safeLink, searchQuerySchema } from "@/lib/job-search/search";
 import { findUnfinishedJobs, startJob } from "@/lib/jobs/runner";
@@ -32,10 +33,10 @@ export const saveAgentSettings = action(
     autoDraft: z.boolean().optional(),
   }),
   async (changes) => {
-    const settings = await loadSettings();
-    const query = changes.query ?? settings.agentQuery;
-    if (changes.enabled && !agentQueryReady(query)) {
-      throw new ActionError(query.keywords.trim() ? "Choose a country for the search before turning the agent on." : "Type what the agent should look for before turning it on.");
+    const searches = (await listAgentSearches()).filter((search) => search.enabled);
+    const query = changes.query ?? searches[0]?.query;
+    if (changes.enabled && (!query || !agentQueryReady(query) || searches.some((search) => !agentQueryReady(search.query)))) {
+      throw new ActionError(query?.keywords.trim() ? "Choose a country for the search before turning the agent on." : "Type what the agent should look for before turning it on.");
     }
     await saveSettings({
       agentEnabled: changes.enabled,
@@ -59,11 +60,12 @@ export const saveAgentSettings = action(
 export const runAgentNow = action(z.object({}), async () => {
   const settings = await loadSettings();
   if (!settings.agentEnabled) throw new ActionError("Turn the job agent on in Settings → Job agent first.");
-  const setup = await agentSetupProblem(settings.agentQuery);
+  const setup = await agentSetupProblem();
   if (setup) throw new ActionError(setup);
   const [unfinished] = await findUnfinishedJobs(AGENT_JOB_KEY);
   if (unfinished) return { jobId: unfinished.id, reused: true };
-  const limit = runLimitProblem(settings.agentRuns, new Date(), { manual: true });
+  const requests = (await listAgentSearches()).filter((search) => search.enabled).length;
+  const limit = runLimitProblem(settings.agentRuns, new Date(), { manual: true, requests });
   if (limit) throw new ActionError(limit);
   const jobId = await startJob(agentScanJob, { manual: true }, { key: AGENT_JOB_KEY });
   revalidatePath("/agent");

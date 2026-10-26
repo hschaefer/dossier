@@ -4,12 +4,18 @@ import { saveSettings } from "@/lib/settings-data";
 import { createTestClient, resetDatabase } from "@/test/db";
 
 import { countAgentQueue, loadAgentView } from "./view";
+import { withAgentScanLock } from "./scan-lock";
 
 const db = vi.hoisted(() => ({ client: undefined as ReturnType<typeof createTestClient> | undefined }));
 vi.mock("@/lib/prisma", async () => {
   const { createTestClient } = await import("@/test/db");
   db.client = createTestClient();
   return { prisma: db.client };
+});
+vi.mock("./scan-lock", async (original) => {
+  const { withAgentScanLock } = await original<typeof import("./scan-lock")>();
+  const { testDatabaseUrl } = await import("@/test/db");
+  return { withAgentScanLock: <T>(work: (signal: AbortSignal) => Promise<T>) => withAgentScanLock(work, testDatabaseUrl()) };
 });
 vi.mock("@/lib/time-zone", () => ({ lastKnownTimeZone: async () => "Europe/Berlin" }));
 vi.mock("@/lib/ai/config", () => ({ isAiConfigured: async () => true }));
@@ -34,10 +40,28 @@ beforeEach(async () => {
 afterAll(() => prisma().$disconnect());
 
 describe("the Agent screen's data (E16-6)", () => {
+  it("surfaces interrupted runs and their conservative budget cost before another scan can run", async () => {
+    await saveSettings({ agentRuns: [{ at: now.toISOString(), manual: false, message: null, sourceRequests: 3 }] });
+    const view = await loadAgentView(now);
+    expect(view.lastRun?.message).toContain("interrupted");
+    expect(view.lastRun?.message).toContain("All 3 reserved source requests still count");
+    expect(view.lastRun?.message).toContain("including any not sent");
+    expect(view.sourceRequestsUsed).toBe(3);
+    expect(view.limitReached).toBe(true);
+  });
+
+  it("doesn't reconcile a live scan when the screen is opened", async () => {
+    await saveSettings({ agentRuns: [{ at: now.toISOString(), manual: false, message: null, sourceRequests: 2 }] });
+    await withAgentScanLock(async () => {
+      expect((await loadAgentView(now)).lastRun?.message).toBeNull();
+    });
+  });
   it("splits the queue into drafts, scored postings and those below the minimum, best first", async () => {
     const application = await prisma().application.create({ data: { origin: "AGENT", awaitingReview: true } });
     await candidate("draft", 90, { status: "DRAFTED", applicationId: application.id });
     const good = await candidate("good", 75);
+    const search = await prisma().agentSearch.findFirstOrThrow();
+    await prisma().agentCandidateSearch.create({ data: { candidateId: good.id, searchId: search.id, searchName: "Original search name" } });
     await candidate("better", 88);
     await candidate("low", 30);
     await candidate("gone", 95, { status: "DISMISSED" });
@@ -48,9 +72,12 @@ describe("the Agent screen's data (E16-6)", () => {
     expect(view.drafts.map((entry) => entry.title)).toEqual(["Posting draft"]);
     expect(view.scored.map((entry) => entry.title)).toEqual(["Posting better", "Posting good"]);
     expect(view.belowMinimum.map((entry) => entry.title)).toEqual(["Posting low"]);
-    expect(view.scored[1]).toMatchObject({ facts: "Berlin · Remote", origin: "Posted 2 days ago · via LinkedIn on JSearch", draftJobId: job.id });
+    expect(view.scored[1]).toMatchObject({ facts: "Berlin · Remote", origin: "Posted 2 days ago · via LinkedIn on JSearch", draftJobId: job.id, searches: [{ searchId: search.id, searchName: "Original search name" }] });
     expect(view).toMatchObject({
       search: "Data scientist · Berlin, 25 km · via JSearch",
+      searches: [expect.objectContaining({ id: search.id, enabled: true })],
+      sourceRequestsUsed: 1,
+      nextEligibleAt: now.toISOString(),
       setupProblem: null,
       limitReached: false,
       lastRun: { at: "Tue 20 Oct, 07:00", message: "2 new postings are waiting for a look." },
