@@ -635,11 +635,41 @@ model ClaudePaste {
 
 // ─── Job agent (E16) ─────────────────────────────────────────────────────────
 
+/// Recurring queries; provider and credentials remain global settings.
+model AgentSearch {
+  id         String                 @id @default(cuid())
+  name       String
+  query      Json
+  enabled    Boolean                @default(true)
+  sort       Int                    @default(0)
+  candidates AgentCandidateSearch[]
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+
+  @@index([sort, createdAt])
+}
+
+/// Only scored candidates get attribution, never raw source results.
+/// The original name remains when a search is renamed or deleted.
+model AgentCandidateSearch {
+  id          String         @id @default(cuid())
+  candidateId String
+  candidate   AgentCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  searchId    String?
+  search      AgentSearch?   @relation(fields: [searchId], references: [id], onDelete: SetNull)
+  searchName  String
+  createdAt   DateTime       @default(now())
+
+  @@unique([candidateId, searchId])
+  @@index([searchId])
+}
+
 /// A posting the job agent found and scored, and the draft it prepared from
 /// it. Kept after it's dismissed, trimmed to what dedupe needs, so the same
 /// posting never comes back.
 model AgentCandidate {
   id            String               @id @default(cuid())
+  searches      AgentCandidateSearch[]
   source        PostingSource
   /// The source's own id for it.
   externalId    String

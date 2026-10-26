@@ -2,6 +2,9 @@ import "server-only";
 
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { encryptApiKey } from "@/lib/ai/api-key";
+import { agentSearchInputSchema, legacyAgentQuery, MAX_AGENT_SEARCHES } from "@/lib/agent/search";
+import { lockAgentSearches } from "@/lib/agent/searches";
+import { ActionError } from "@/lib/action";
 import { EXPORT_FORMAT, EXPORT_SCHEMA_VERSION, EXPORT_SCHEMA_VERSIONS, exportSchema, INSTALL_SETTINGS, SECRET_SETTINGS, type DossierExport } from "@/lib/data-export";
 import { encryptSecret, JOB_SOURCE_KEY } from "@/lib/secrets";
 
@@ -84,8 +87,22 @@ export async function importExport(db: PrismaClient, data: DossierExport): Promi
     adzunaKeyEnc: jobSourceKeys?.adzuna ? encryptSecret(JOB_SOURCE_KEY, jobSourceKeys.adzuna) : null,
   };
   const keptKeys = [...SECRET_SETTINGS.filter((key) => !fromFile[key]), ...INSTALL_SETTINGS];
+  // Also validate direct callers, before deleting anything. Legacy conversion
+  // is confined to <=5 files; v6 never resurrects an obsolete setting.
+  let agentSearches = data.agentSearches ?? [];
+  if (data.schemaVersion <= 5 && agentSearches.length === 0) {
+    const query = legacyAgentQuery(settings.find((setting) => setting.key === "agentQuery")?.value ?? "null");
+    if (query) agentSearches = [{ id: "agent-search-legacy", name: "My search", query, enabled: true, sort: 0, createdAt: data.exportedAt, updatedAt: data.exportedAt }];
+  }
+  if (agentSearches.length > MAX_AGENT_SEARCHES) throw new ActionError("Keep at most three Agent searches.");
+  agentSearches = agentSearches.map((search) => {
+    const parsed = agentSearchInputSchema.safeParse(search);
+    if (!parsed.success) throw new ActionError(`That export has an invalid Agent search: ${parsed.error.issues[0].message}`);
+    return { ...search, ...parsed.data };
+  });
   await db.$transaction(
     async (tx) => {
+      await lockAgentSearches(tx);
       // Out with the old. Applications take their history, documents, chat,
       // notes and jobs along; the other jobs (a resume import, postings read
       // for applications never created) hold the old data too.
@@ -93,6 +110,7 @@ export async function importExport(db: PrismaClient, data: DossierExport): Promi
       await tx.posting.deleteMany();
       await tx.postingSearch.deleteMany();
       await tx.agentCandidate.deleteMany();
+      await tx.agentSearch.deleteMany();
       await tx.startup.deleteMany();
       await tx.startupBlock.deleteMany();
       // Scores of postings (#208) belong to the profile being replaced; they're left out of exports, since they can be made again.
@@ -133,7 +151,7 @@ export async function importExport(db: PrismaClient, data: DossierExport): Promi
       await tx.reference.createMany({ data: profile.references });
       await tx.fact.createMany({ data: profile.facts });
       await tx.theme.createMany({ data: themes.map((theme) => ({ ...theme, builtIn: false })) });
-      await tx.setting.createMany({ data: settings.filter((setting) => !SECRET_SETTINGS.includes(setting.key) && !INSTALL_SETTINGS.includes(setting.key)) });
+      await tx.setting.createMany({ data: settings.filter((setting) => setting.key !== "agentQuery" && !SECRET_SETTINGS.includes(setting.key) && !INSTALL_SETTINGS.includes(setting.key)) });
       for (const [key, value] of Object.entries(fromFile)) if (value) await tx.setting.create({ data: { key, value } });
 
       const themeIds = new Set((await tx.theme.findMany({ select: { id: true } })).map((theme) => theme.id));
@@ -198,6 +216,14 @@ export async function importExport(db: PrismaClient, data: DossierExport): Promi
           reasons: json(candidate.reasons),
           redFlags: json(candidate.redFlags),
           applicationId: candidate.applicationId && applicationIds.has(candidate.applicationId) ? candidate.applicationId : null,
+        })),
+      });
+      await tx.agentSearch.createMany({ data: agentSearches });
+      const searchIds = new Set(agentSearches.map((search) => search.id));
+      const candidateIds = new Set(agentCandidates.map((candidate) => candidate.id));
+      await tx.agentCandidateSearch.createMany({
+        data: (data.agentCandidateSearches ?? []).filter((link) => candidateIds.has(link.candidateId)).map((link) => ({
+          ...link, searchId: link.searchId && searchIds.has(link.searchId) ? link.searchId : null,
         })),
       });
       // Startups (#222) with what the user did with them; an application that isn't in the file leaves one unlinked.

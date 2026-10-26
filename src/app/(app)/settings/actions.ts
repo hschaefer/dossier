@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { AiProvider, Creativity, DateFormat, JobStatus, PaperSize, Tone } from "@/generated/prisma/enums";
 import { action, ActionError } from "@/lib/action";
+import { lockAgentSearches } from "@/lib/agent/searches";
 import { AiError, createProvider } from "@/lib/ai";
 import { applyApiKeyChange } from "@/lib/ai/api-key";
 import { keyStateOf, loadAiConfig, resolveAiConfig } from "@/lib/ai/config";
@@ -239,6 +240,7 @@ export const deleteEverything = action(z.object({ confirm: z.literal("DELETE") }
   await disconnectGoogle().catch(() => {});
 
   await prisma.$transaction(async (tx) => {
+    await lockAgentSearches(tx);
     await tx.job.deleteMany();
     // Find jobs' postings and past searches (E14-9, E14-10).
     await tx.posting.deleteMany();
@@ -247,6 +249,7 @@ export const deleteEverything = action(z.object({ confirm: z.literal("DELETE") }
     await tx.claudePaste.deleteMany();
     // What the job agent found (E16).
     await tx.agentCandidate.deleteMany();
+    await tx.agentSearch.deleteMany();
     await tx.postingScore.deleteMany();
     // Startups, and the fingerprints of ones removed for good (#222).
     await tx.startup.deleteMany();

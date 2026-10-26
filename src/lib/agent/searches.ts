@@ -1,0 +1,40 @@
+import "server-only";
+
+import type { Prisma, PrismaClient } from "@/generated/prisma/client";
+import { ActionError } from "@/lib/action";
+import { searchQuerySchema } from "@/lib/job-search/search";
+import { prisma } from "@/lib/prisma";
+
+import { agentSearchInputSchema, MAX_AGENT_SEARCHES, type AgentSearchInput, type SavedAgentSearch } from "./search";
+
+/** Serialize all search writes, including imports, without introducing a lock table. */
+export async function lockAgentSearches(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(621746001)::text`;
+}
+
+export async function listAgentSearches(db: PrismaClient = prisma): Promise<SavedAgentSearch[]> {
+  const rows = await db.agentSearch.findMany({ orderBy: [{ sort: "asc" }, { createdAt: "asc" }, { id: "asc" }] });
+  return rows.map((row) => ({ ...row, query: searchQuerySchema.parse(row.query) }));
+}
+
+/** Create, or update by stable id. Disabled searches count toward the cap too. */
+export async function saveAgentSearch(input: AgentSearchInput, id?: string, db: PrismaClient = prisma): Promise<SavedAgentSearch> {
+  const data = agentSearchInputSchema.parse(input);
+  return db.$transaction(async (tx) => {
+    await lockAgentSearches(tx);
+    if (id && !await tx.agentSearch.findUnique({ where: { id }, select: { id: true } })) throw new ActionError("That Agent search no longer exists.");
+    if (!id && await tx.agentSearch.count() >= MAX_AGENT_SEARCHES) throw new ActionError("Keep at most three Agent searches.");
+    const row = id
+      ? await tx.agentSearch.update({ where: { id }, data })
+      : await tx.agentSearch.create({ data });
+    return { ...row, query: searchQuerySchema.parse(row.query) };
+  });
+}
+
+/** The FK unlinks attribution but keeps its historical name. Candidates remain. */
+export async function deleteAgentSearch(id: string, db: PrismaClient = prisma): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await lockAgentSearches(tx);
+    await tx.agentSearch.deleteMany({ where: { id } });
+  });
+}
