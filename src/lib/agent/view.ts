@@ -12,11 +12,11 @@ import type { AgentSearchRun } from "@/lib/settings";
 import { stringsOf } from "./candidates";
 import { AGENT_JOB_KEY } from "./jobs";
 import { agentSetupProblem } from "./run";
-import { nextSourceBudgetAt, reconcileInterruptedRuns, sourceRequestsInPastDay } from "./runs";
+import { interruptedRunMessage, nextSourceBudgetAt, sourceRequestsInPastDay } from "./runs";
 import { nextAgentRun } from "./schedule";
 import { listAgentSearches } from "./searches";
 import type { SavedAgentSearch } from "./search";
-import { withAgentScanLock } from "./scan-lock";
+import { isAgentScanRunning } from "./scan-lock";
 
 // What the Agent screen shows (E16-6).
 
@@ -94,9 +94,6 @@ const sectionOf = (problem: string): AgentView["setupSection"] =>
   problem.includes("AI provider") ? "ai" : problem.includes("Job search") ? "jobs" : "agent";
 
 export async function loadAgentView(now = new Date()): Promise<AgentView> {
-  // Even when quota prevents Run now, expose a hard-crashed run's outcome.
-  // A live scan owns this lock, so viewing it never marks it interrupted.
-  await withAgentScanLock(async () => reconcileInterruptedRuns());
   const [settings, timeZone, candidates, draftJobs, runJobs, searches] = await Promise.all([
     loadSettings(),
     lastKnownTimeZone(),
@@ -112,6 +109,13 @@ export async function loadAgentView(now = new Date()): Promise<AgentView> {
     prisma.job.findMany({ where: { key: AGENT_JOB_KEY, status: { in: [JobStatus.QUEUED, JobStatus.RUNNING] } }, select: { id: true }, take: 1 }),
     listAgentSearches(),
   ]);
+  // Present an interrupted reservation even when quota prevents another run.
+  // This is read-only: taking the scan lock on render can reject the very job
+  // a Run now action has just started. The next scan persists reconciliation
+  // while owning execution. A queued/live job keeps its pending outcome.
+  if (!runJobs.length && settings.agentRuns.some((run) => run.message === null) && !await isAgentScanRunning()) {
+    for (const run of settings.agentRuns) if (run.message === null) run.message = interruptedRunMessage(run);
+  }
   const draftJob = new Map(draftJobs.map((job) => [job.key?.replace(/^agent-candidate:/, ""), job.id]));
 
   const setupProblem = await agentSetupProblem();

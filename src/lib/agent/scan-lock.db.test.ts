@@ -3,13 +3,13 @@ import { expect, it } from "vitest";
 
 import { testDatabaseUrl } from "@/test/db";
 
-import { withAgentScanLock } from "./scan-lock";
+import { AGENT_SCAN_LOCK_ID, withAgentScanLock } from "./scan-lock";
 
 it("releases scan ownership when a process connection disappears, without a stale lease", async () => {
   const oldProcess = new Client({ connectionString: testDatabaseUrl() });
   await oldProcess.connect();
   try {
-    await oldProcess.query("SELECT pg_advisory_lock(621746003)");
+    await oldProcess.query("SELECT pg_advisory_lock($1::bigint)", [AGENT_SCAN_LOCK_ID]);
     let dispatched = false;
     expect(await withAgentScanLock(async () => { dispatched = true; }, testDatabaseUrl())).toBeNull();
     expect(dispatched).toBe(false);

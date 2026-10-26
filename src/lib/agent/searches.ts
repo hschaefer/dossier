@@ -31,6 +31,19 @@ export async function saveAgentSearch(input: AgentSearchInput, id?: string, db: 
   });
 }
 
+/** A stale toggle must never replace another tab's name, query or order. */
+export async function setAgentSearchEnabled(id: string, enabled: boolean, db: PrismaClient = prisma): Promise<SavedAgentSearch> {
+  return db.$transaction(async (tx) => {
+    await lockAgentSearches(tx);
+    const current = await tx.agentSearch.findUnique({ where: { id } });
+    if (!current) throw new ActionError("That Agent search no longer exists.");
+    const query = searchQuerySchema.parse(current.query);
+    if (enabled && !query.country) throw new ActionError(`Choose a country for “${current.name}”.`);
+    const row = await tx.agentSearch.update({ where: { id }, data: { enabled } });
+    return { ...row, query };
+  });
+}
+
 /** The FK unlinks attribution but keeps its historical name. Candidates remain. */
 export async function deleteAgentSearch(id: string, db: PrismaClient = prisma): Promise<void> {
   await db.$transaction(async (tx) => {

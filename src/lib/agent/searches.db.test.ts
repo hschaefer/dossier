@@ -11,7 +11,7 @@ import { createTestClient, resetDatabase } from "@/test/db";
 
 import { attributeAgentCandidates } from "./attribution";
 import { candidateData } from "./candidates";
-import { deleteAgentSearch, listAgentSearches, lockAgentSearches, saveAgentSearch } from "./searches";
+import { deleteAgentSearch, listAgentSearches, lockAgentSearches, saveAgentSearch, setAgentSearchEnabled } from "./searches";
 
 vi.mock("@/lib/env", () => ({ env: { DOSSIER_SECRET: "s".repeat(32) } }));
 vi.mock("@/lib/prisma", () => ({ prisma: new Proxy({}, { get: (_, key) => Reflect.get(client, key) }) }));
@@ -26,6 +26,21 @@ beforeEach(() => resetDatabase(client));
 afterAll(() => client.$disconnect());
 
 describe("recurring Agent search storage", () => {
+  it("patches enabled only against the current row, retaining concurrent edits and validating its country", async () => {
+    const original = await saveAgentSearch(input, undefined, client);
+    const edited = await saveAgentSearch({ ...input, name: "Edited elsewhere", query: { ...input.query, keywords: "Engineer", place: "Hamburg" }, sort: 9 }, original.id, client);
+    const toggled = await setAgentSearchEnabled(original.id, false, client);
+    expect(toggled).toMatchObject({ id: original.id, enabled: false, name: edited.name, query: edited.query, sort: 9, createdAt: edited.createdAt });
+    expect(await client.agentSearch.findUnique({ where: { id: original.id } })).toMatchObject({ enabled: false, name: edited.name, query: edited.query, sort: 9 });
+
+    const incomplete = await saveAgentSearch({ ...input, name: "Current country missing", query: { ...input.query, country: "" }, sort: 4, enabled: false }, original.id, client);
+    await expect(setAgentSearchEnabled(original.id, true, client)).rejects.toThrow("Choose a country for “Current country missing”.");
+    expect(await client.agentSearch.findUnique({ where: { id: original.id } })).toMatchObject({ enabled: false, name: incomplete.name, query: incomplete.query, sort: 4 });
+    await expect(setAgentSearchEnabled(original.id, false, client)).resolves.toMatchObject({ enabled: false, query: incomplete.query });
+    await deleteAgentSearch(original.id, client);
+    await expect(setAgentSearchEnabled(original.id, true, client)).rejects.toThrow("no longer exists");
+  });
+
   it("normalizes queries and names, preserves stable ids, and orders enabled and disabled searches", async () => {
     const first = await saveAgentSearch({ ...input, sort: 2 }, undefined, client);
     const second = await saveAgentSearch({ ...input, name: "Other", enabled: false }, undefined, client);
@@ -110,6 +125,37 @@ describe("recurring Agent search storage", () => {
       const states = await postingStates([posting("uncommitted")], tx);
       expect([...states.values()]).toEqual([expect.objectContaining({ saved: true })]);
     });
+  });
+
+  it("restores dangling search references as historical labels and ignores links without candidates", async () => {
+    const search = await saveAgentSearch(input, undefined, client);
+    const kept = await client.agentCandidate.create({ data: candidateData(posting("kept"), score) });
+    await attributeAgentCandidates(search, [posting("kept")]);
+    const data = await buildExport(client);
+    const link = data.agentCandidateSearches[0];
+    await importExport(client, { ...data, agentSearches: [], agentCandidateSearches: [
+      link, { ...link, id: "orphan-link", candidateId: "missing-candidate" },
+    ] });
+    expect(await client.agentCandidateSearch.findMany()).toEqual([
+      expect.objectContaining({ candidateId: kept.id, searchId: null, searchName: "Design" }),
+    ]);
+    expect(await client.agentCandidate.count()).toBe(1);
+    expect(await client.agentSearch.count()).toBe(0);
+  });
+
+  it("rolls back the whole replacement if imported attribution violates uniqueness", async () => {
+    const search = await saveAgentSearch(input, undefined, client);
+    await client.agentCandidate.create({ data: candidateData(posting("kept"), score) });
+    await attributeAgentCandidates(search, [posting("kept")]);
+    const data = await buildExport(client);
+    const link = data.agentCandidateSearches[0];
+    await expect(importExport(client, { ...data, agentSearches: [{ ...data.agentSearches[0], name: "Should roll back" }], agentCandidateSearches: [
+      link, { ...link, id: "duplicate-link" },
+    ] })).rejects.toThrow();
+    const after = await buildExport(client);
+    expect(after.agentSearches).toEqual(data.agentSearches);
+    expect(after.agentCandidates).toEqual(data.agentCandidates);
+    expect(after.agentCandidateSearches).toEqual(data.agentCandidateSearches);
   });
 
   it("keeps every attribution eligibility read on its transaction client", async () => {

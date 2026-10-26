@@ -9,7 +9,7 @@ import { AGENT_JOB_KEY, agentScanJob } from "@/lib/agent/jobs";
 import { agentSetupProblem } from "@/lib/agent/run";
 import { runLimitProblem } from "@/lib/agent/runs";
 import { agentSearchInputSchema, agentSearchSetupProblem } from "@/lib/agent/search";
-import { deleteAgentSearch, listAgentSearches, moveAgentSearch, saveAgentSearch } from "@/lib/agent/searches";
+import { deleteAgentSearch, listAgentSearches, moveAgentSearch, saveAgentSearch, setAgentSearchEnabled } from "@/lib/agent/searches";
 import { action, ActionError } from "@/lib/action";
 import { safeLink } from "@/lib/job-search/search";
 import { findUnfinishedJobs, startJob } from "@/lib/jobs/runner";
@@ -52,6 +52,12 @@ export const saveAgentSettings = action(
 );
 
 const searchId = z.string().min(1).max(100);
+export const setRecurringSearchEnabled = action(z.object({ id: searchId, enabled: z.boolean() }).strict(), async ({ id, enabled }) => {
+  const search = await setAgentSearchEnabled(id, enabled);
+  revalidatePath("/agent");
+  revalidatePath("/settings");
+  return search;
+});
 export const saveRecurringSearch = action(
   agentSearchInputSchema.extend({ id: searchId.optional() }).strict(),
   async ({ id, ...input }) => {

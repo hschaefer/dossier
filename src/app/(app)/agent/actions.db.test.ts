@@ -6,7 +6,7 @@ import { setStatus } from "@/lib/status-actions";
 import { getSession } from "@/lib/auth/session";
 import { createTestClient, resetDatabase } from "@/test/db";
 
-import { approveAgentDraft, dismissAgentCandidate, prepareAgentDraft, restoreAgentCandidate, runAgentNow, saveAgentSettings, saveRecurringSearch, deleteRecurringSearch, moveRecurringSearch } from "./actions";
+import { approveAgentDraft, dismissAgentCandidate, prepareAgentDraft, restoreAgentCandidate, runAgentNow, saveAgentSettings, saveRecurringSearch, deleteRecurringSearch, moveRecurringSearch, setRecurringSearchEnabled } from "./actions";
 
 const db = vi.hoisted(() => ({ client: undefined as ReturnType<typeof createTestClient> | undefined }));
 vi.mock("@/lib/prisma", async () => {
@@ -118,8 +118,12 @@ describe("the drafts' actions (E16-5)", () => {
 
   it("dismisses a posting, with what Undo needs, and puts it back", async () => {
     const scored = await candidate();
+    const search = await prisma().agentSearch.findFirstOrThrow();
+    await prisma().agentCandidateSearch.create({ data: { candidateId: scored.id, searchId: search.id, searchName: "Original search name" } });
     const result = await dismissAgentCandidate({ candidateId: scored.id });
     expect(result).toMatchObject({ ok: true, data: { undo: { id: scored.id, url: "https://jobs.example/1", reasons: ["Python"] } } });
+    expect(await prisma().agentCandidate.findUniqueOrThrow({ where: { id: scored.id } })).toMatchObject({ status: "DISMISSED", url: "", description: "", reasons: [] });
+    expect(await prisma().agentCandidateSearch.findMany()).toEqual([expect.objectContaining({ candidateId: scored.id, searchName: "Original search name" })]);
     if (!result.ok || !result.data.undo) throw new Error("no undo");
     // As the browser sends it back: dates as strings, and a link that must stay a web address.
     const sent = JSON.parse(JSON.stringify(result.data.undo));
@@ -159,10 +163,37 @@ describe("saving the agent's settings (E16-7)", () => {
 });
 
 describe("recurring search actions", () => {
+  it("rejects untrusted payloads without writing queries, credentials or attribution fields", async () => {
+    const before = await prisma().agentSearch.findMany();
+    const settings = await prisma().setting.findMany();
+    for (const input of [
+      { name: "Injected", query, source: "ADZUNA", apiKey: "not-a-real-secret" },
+      { name: "Injected", query, candidateIds: ["foreign-candidate"] },
+      { name: "Too long", query: { ...query, keywords: "x".repeat(501) } },
+      { name: "x".repeat(101), query },
+      { id: "x".repeat(101), name: "Invalid ID", query },
+      { name: "Invalid sort", query, sort: -1 },
+    ]) {
+      expect(await Reflect.apply(saveRecurringSearch, undefined, [input])).toMatchObject({ ok: false });
+    }
+    for (const [mutate, input] of [
+      [deleteRecurringSearch, { id: before[0].id, all: true }],
+      [moveRecurringSearch, { id: before[0].id, direction: "up", sort: 999 }],
+      [setRecurringSearchEnabled, { id: before[0].id, enabled: false, name: "Injected", query, sort: 999 }],
+      [setRecurringSearchEnabled, { id: before[0].id, enabled: "false" }],
+    ] as const) {
+      expect(await Reflect.apply(mutate, undefined, [input])).toMatchObject({ ok: false });
+    }
+    expect(await prisma().agentSearch.findMany()).toEqual(before);
+    expect(await prisma().setting.findMany()).toEqual(settings);
+    expect(await prisma().agentCandidateSearch.count()).toBe(0);
+  });
+
   it("authenticates every search mutation before changing data", async () => {
     const first = await prisma().agentSearch.findFirstOrThrow();
     for (const mutate of [
       () => saveRecurringSearch({ name: "New", query }),
+      () => setRecurringSearchEnabled({ id: first.id, enabled: false }),
       () => deleteRecurringSearch({ id: first.id }),
       () => moveRecurringSearch({ id: first.id, direction: "down" }),
     ]) {
@@ -170,6 +201,18 @@ describe("recurring search actions", () => {
       expect(await mutate()).toMatchObject({ ok: false });
     }
     expect(await prisma().agentSearch.count()).toBe(1);
+    expect(await prisma().agentSearch.findUnique({ where: { id: first.id } })).toEqual(first);
+  });
+
+  it("toggles only enabled by id and refuses to enable the current incomplete query", async () => {
+    const first = await prisma().agentSearch.findFirstOrThrow();
+    const editedQuery = { ...query, keywords: "Designer", place: "Hamburg" };
+    await saveRecurringSearch({ id: first.id, name: "Edited in another tab", query: editedQuery, sort: 5 });
+    expect(await setRecurringSearchEnabled({ id: first.id, enabled: false })).toMatchObject({ ok: true, data: { id: first.id, name: "Edited in another tab", query: editedQuery, sort: 5, enabled: false } });
+    await saveRecurringSearch({ id: first.id, name: "Needs a country", query: { ...editedQuery, country: "" }, sort: 3, enabled: false });
+    expect(await setRecurringSearchEnabled({ id: first.id, enabled: true })).toEqual({ ok: false, error: "Choose a country for “Needs a country”." });
+    expect(await prisma().agentSearch.findUnique({ where: { id: first.id } })).toMatchObject({ name: "Needs a country", query: { ...editedQuery, country: "" }, sort: 3, enabled: false });
+    expect(await setRecurringSearchEnabled({ id: "deleted", enabled: true })).toEqual({ ok: false, error: "That Agent search no longer exists." });
   });
 
   it("rejects missing countries on enabled searches, invalid directions and legacy query settings", async () => {

@@ -13,9 +13,9 @@ vi.mock("@/lib/prisma", async () => {
   return { prisma: db.client };
 });
 vi.mock("./scan-lock", async (original) => {
-  const { withAgentScanLock } = await original<typeof import("./scan-lock")>();
+  const actual = await original<typeof import("./scan-lock")>();
   const { testDatabaseUrl } = await import("@/test/db");
-  return { withAgentScanLock: <T>(work: (signal: AbortSignal) => Promise<T>) => withAgentScanLock(work, testDatabaseUrl()) };
+  return { ...actual, withAgentScanLock: <T>(work: (signal: AbortSignal) => Promise<T>) => actual.withAgentScanLock(work, testDatabaseUrl()) };
 });
 vi.mock("@/lib/time-zone", () => ({ lastKnownTimeZone: async () => "Europe/Berlin" }));
 vi.mock("@/lib/ai/config", () => ({ isAiConfigured: async () => true }));
@@ -62,6 +62,14 @@ describe("the Agent screen's data (E16-6)", () => {
     expect(view.lastRun?.message).toContain("including any not sent");
     expect(view.sourceRequestsUsed).toBe(3);
     expect(view.limitReached).toBe(true);
+    // Rendering must not take execution ownership or mutate its ledger.
+    expect((await prisma().setting.findUniqueOrThrow({ where: { key: "agentRuns" } })).value).toContain('"message":null');
+  });
+
+  it("keeps a queued scan pending without competing for execution ownership", async () => {
+    await saveSettings({ agentRuns: [{ at: now.toISOString(), manual: false, message: null, sourceRequests: 2 }] });
+    const job = await prisma().job.create({ data: { type: "agent-scan", key: "agent", input: { manual: true } } });
+    expect(await loadAgentView(now)).toMatchObject({ runJobId: job.id, lastRun: { message: null } });
   });
 
   it("doesn't reconcile a live scan when the screen is opened", async () => {

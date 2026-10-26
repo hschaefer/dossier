@@ -5,13 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "@/components/toast";
 import type { SavedAgentSearch } from "@/lib/agent/search";
 
-import { deleteRecurringSearch, moveRecurringSearch, saveAgentSettings, saveRecurringSearch } from "../agent/actions";
+import { deleteRecurringSearch, moveRecurringSearch, saveAgentSettings, saveRecurringSearch, setRecurringSearchEnabled } from "../agent/actions";
 import { AgentSection, type AgentSettings } from "./agent-section";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("../agent/actions", () => ({
   saveAgentSettings: vi.fn(async () => ({ ok: true, data: null })),
-  saveRecurringSearch: vi.fn(), moveRecurringSearch: vi.fn(), deleteRecurringSearch: vi.fn(),
+  saveRecurringSearch: vi.fn(), moveRecurringSearch: vi.fn(), deleteRecurringSearch: vi.fn(), setRecurringSearchEnabled: vi.fn(),
 }));
 vi.mock("@/components/toast", () => ({ toast: vi.fn(), toastResult: (result: { ok: boolean; error?: string }) => (result.ok ? result : (toast(result.error!), result)) }));
 
@@ -95,9 +95,10 @@ describe("Settings → Job agent", () => {
     vi.mocked(saveRecurringSearch).mockResolvedValueOnce({ ok: true, data: { ...search, query: { ...search.query, keywords: "Data scientist NLP" } } });
     await user.click(screen.getByRole("button", { name: "Save search" }));
     expect(saveRecurringSearch).toHaveBeenLastCalledWith(expect.objectContaining({ id: "one", query: expect.objectContaining({ keywords: "Data scientist NLP" }) }));
-    vi.mocked(saveRecurringSearch).mockResolvedValueOnce({ ok: true, data: { ...search, enabled: false } });
+    vi.mocked(setRecurringSearchEnabled).mockResolvedValueOnce({ ok: true, data: { ...search, enabled: false } });
     await user.click(screen.getByRole("switch", { name: "Data roles" }));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Data roles" })).toHaveAttribute("aria-checked", "false"));
+    expect(setRecurringSearchEnabled).toHaveBeenCalledWith({ id: search.id, enabled: false });
   });
 
   it("caps at three including disabled searches, moves accessibly and confirms deletion", async () => {

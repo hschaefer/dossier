@@ -15,7 +15,7 @@ import { agentSearchInputSchema, MAX_AGENT_SEARCHES, type SavedAgentSearch } fro
 import type { Country } from "@/lib/job-search/countries";
 import { EMPTY_QUERY, searchHref, type JobSource, type SearchQuery } from "@/lib/job-search/search";
 
-import { deleteRecurringSearch, moveRecurringSearch, saveRecurringSearch } from "../agent/actions";
+import { deleteRecurringSearch, moveRecurringSearch, saveRecurringSearch, setRecurringSearchEnabled } from "../agent/actions";
 import { RemoteOnlyField, SearchFields } from "../jobs/search-fields";
 
 export function RecurringSearches({ initial, suggestedQuery, source, countries }: {
@@ -47,7 +47,7 @@ export function RecurringSearches({ initial, suggestedQuery, source, countries }
     router.refresh();
   };
   const toggle = (search: SavedAgentSearch, enabled: boolean) => startTransition(async () => {
-    const result = toastResult(await track(saveRecurringSearch({ id: search.id, name: search.name, query: search.query, enabled, sort: search.sort })));
+    const result = toastResult(await track(setRecurringSearchEnabled({ id: search.id, enabled })));
     if (result.ok) update(result.data);
   });
   const move = (id: string, direction: "up" | "down") => startTransition(async () => {
@@ -70,7 +70,7 @@ export function RecurringSearches({ initial, suggestedQuery, source, countries }
       {searches.map((search, index) => (
         <li key={search.id} className="flex flex-col gap-3 border-t border-line pt-4">
           <Toggle
-            label={<span className="break-words">{search.name}</span>}
+            label={<span className="[overflow-wrap:anywhere]">{search.name}</span>}
             aria-label={controlName(search, index)}
             description={search.enabled ? "Enabled" : "Disabled"}
             checked={search.enabled}

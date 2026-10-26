@@ -16,6 +16,11 @@ const requestTimes = (run: AgentRun): string[] =>
 export const sourceRequestsInPastDay = (runs: readonly AgentRun[], now: Date) =>
   runs.flatMap(requestTimes).filter((at) => Date.parse(at) + DAY_MS > now.getTime()).length;
 
+export function interruptedRunMessage(run: AgentRun): string {
+  const requests = run.sourceRequests ?? 1;
+  return `The agent scan was interrupted. All ${requests} reserved source ${requests === 1 ? "request still counts" : "requests still count"} toward the 24-hour limit, including any not sent.`;
+}
+
 /** Whole-run admission: wait until all enabled searches fit, never run a subset. */
 export function nextSourceBudgetAt(runs: readonly AgentRun[], now: Date, requests = 1): Date {
   const recent = runs.flatMap(requestTimes).map(Date.parse).filter((at) => at + DAY_MS > now.getTime()).toSorted((a, b) => a - b);
@@ -42,8 +47,7 @@ export async function reconcileInterruptedRuns(): Promise<void> {
     if (!runs.some((run) => run.message === null)) return;
     for (const run of runs) {
       if (run.message !== null) continue;
-      const requests = run.sourceRequests ?? 1;
-      run.message = `The agent scan was interrupted. All ${requests} reserved source ${requests === 1 ? "request still counts" : "requests still count"} toward the 24-hour limit, including any not sent.`;
+      run.message = interruptedRunMessage(run);
     }
     await tx.setting.update({ where: { key: "agentRuns" }, data: { value: JSON.stringify(runs) } });
   });

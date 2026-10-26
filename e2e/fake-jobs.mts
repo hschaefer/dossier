@@ -8,6 +8,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 const port = Number(process.env.FAKE_JOBS_PORT ?? 3998);
 /** The JSearch key the app is given in e2e/support.ts. */
 const JSEARCH_KEY = "e2e-jsearch-key";
+// Equal fixture dates keep shared score-cap ordering stable even if creating
+// the three postings straddles a millisecond boundary.
+const postedAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
 
 const job = (id: string, title: string, company: string, extra: Record<string, unknown> = {}) => ({
   job_id: id,
@@ -18,7 +21,7 @@ const job = (id: string, title: string, company: string, extra: Record<string, u
   apply_options: [{ publisher: "LinkedIn", apply_link: `https://jobs.example/${id}`, is_direct: false }],
   job_description: `${company} is hiring a ${title}.\n\nWhat you'll do\n- Design checkout flows\n- Work with research\n\nWhat we're looking for\n- 5+ years of product design\n- Strong prototyping skills in Figma`,
   job_is_remote: false,
-  job_posted_at_datetime_utc: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+  job_posted_at_datetime_utc: postedAt,
   job_location: "Rotterdam  •  via LinkedIn",
   job_country: "NL",
   ...extra,
@@ -110,6 +113,8 @@ createServer((request, response) => {
   if (url.pathname === "/jsearch/search-v2") {
     if (request.headers["x-api-key"] !== JSEARCH_KEY) return send(response, 401, { status: "ERROR", error: { message: "Invalid API key" } });
     searches += 1;
+    // Deterministic agent partial-failure coverage, never a real source call.
+    if (/agent-source-failure/.test(url.searchParams.get("query") ?? "")) return send(response, 503, { status: "ERROR", error: { message: "Fixture unavailable" } });
     // "nothing" finds nothing; otherwise two pages, joined by a cursor.
     if (/nothing/i.test(url.searchParams.get("query") ?? "")) return send(response, 200, { status: "OK", data: { jobs: [], cursor: null } });
     const second = url.searchParams.get("cursor") === "PAGE-2";

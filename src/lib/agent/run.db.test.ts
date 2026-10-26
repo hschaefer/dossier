@@ -191,6 +191,23 @@ describe("runAgentScan (E16-3)", () => {
     expect((await runAgentScan({ manual: true }, context(), new Date(now.getTime() + hour))).message).toContain("needs 2 source requests");
   });
 
+  it("keeps source collection success separate from model failure, without inventing candidate attribution", async () => {
+    await saveAgentSearch({ name: "Overlap", query, sort: 1, enabled: true });
+    fake.postings = [page[1]];
+    fake.failOn = page[1].title;
+    const result = await runAgentScan({ manual: false }, context(), now);
+    expect(result).toMatchObject({ found: 2, fresh: 1, scored: 0, drafted: 0, message: "The model's answer didn't come back in the expected shape. Try again." });
+    const run = (await loadSettings()).agentRuns[0];
+    expect(run).toMatchObject({ sourceRequests: 2, message: result.message, searches: [
+      { searchName: "My search", found: 1, fresh: 1, error: null },
+      { searchName: "Overlap", found: 1, fresh: 1, error: null },
+    ] });
+    expect(await prisma().agentCandidate.count()).toBe(0);
+    expect(await prisma().agentCandidateSearch.count()).toBe(0);
+    expect((await runAgentScan({ manual: true }, context(), new Date(now.getTime() + hour))).message).toContain("needs 2 source requests");
+    expect(fake.searches).toBe(2);
+  });
+
   it("attributes existing candidates before dedupe, without restoring dismissed or Find jobs exclusions", async () => {
     const kept = await prisma().agentCandidate.create({ data: candidateData(page[0], { score: 90, reasons: [], redFlags: [] }) });
     const dismissed = await prisma().agentCandidate.create({ data: { source: "JSEARCH", externalId: "b", dedupeKey: agentDedupeKey(page[1]), status: "DISMISSED" } });
