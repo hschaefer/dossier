@@ -30,8 +30,8 @@ rendering in Word for Mac, web/mobile Word, LibreOffice or Google Docs.
 - Layout tables preserve sidebars, side headings and timeline layouts.
   Long tables may paginate differently from the PDF's independent columns.
 - Circle and rounded-square photos are masked locally with `sharp`. If the
-  image cannot be processed, export falls back to a rectangular crop. Word
-  cannot display unconverted WebP photos in the unmasked layouts.
+  image cannot be processed, export falls back to a rectangular crop. WebP
+  photos are converted to PNG for every shape; unconvertible WebP is omitted.
 - Downloading Word does not change the document or its history. Email
   attachments, bulk PDF downloads and backups retain their existing formats.
 

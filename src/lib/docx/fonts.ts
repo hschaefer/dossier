@@ -16,14 +16,10 @@ export type WordFace = {
   file: string;
 };
 
-export type FontRole = "head" | "body";
-
 export type FontQuery = {
   key: string;
   weight: number;
   style?: "normal" | "italic";
-  /** Renderer-role compatibility: both use the static source's default axes. */
-  optical?: "text" | "display";
 };
 
 const FACES = (manifest as { faces: WordFace[] }).faces;
@@ -89,8 +85,6 @@ export function resolveFace(query: FontQuery): { face: WordFace; syntheticItalic
   const pool = styled.length > 0 ? styled : faces.filter((face) => face.style === "normal");
   const weights = [...new Set(pool.map((face) => face.weight))];
   const weight = nearest(weights, query.weight);
-  // The browser's static faces already pin all non-weight axes at defaults.
-  // Keep the renderer's optical role input, but never invent a display variant.
   const face = pool.find((face) => face.weight === weight)!;
   return {
     face,

@@ -78,11 +78,8 @@ describe("Word font manifest", () => {
     expect(wordFont({ key: "GEIST", weight: 600 }).bold).toBe(false);
   });
 
-  it("uses the browser's default axes for text and display roles", () => {
-    const text = resolveFace({ key: "NEWSREADER", weight: 500, optical: "text" }).face;
-    const display = resolveFace({ key: "NEWSREADER", weight: 500, optical: "display" }).face;
-    expect(text.optical).toBe("text");
-    expect(display).toBe(text);
+  it("uses the static source's default axes", () => {
+    expect(resolveFace({ key: "NEWSREADER", weight: 500 }).face.optical).toBe("text");
   });
 
   it("uses Newsreader's real italic and slants other families synthetically", () => {
@@ -108,7 +105,7 @@ describe("Word font manifest", () => {
   it("returns one face per family for embedding", () => {
     const faces = facesFor([
       { key: "GEIST", weight: 400 },
-      { key: "GEIST", weight: 400, optical: "text" },
+      { key: "GEIST", weight: 400 },
       { key: SCRIPT_FONT_KEYS.arabic, weight: 400 },
     ]);
     expect(faces).toHaveLength(2);

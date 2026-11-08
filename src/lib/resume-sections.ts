@@ -55,7 +55,7 @@ export function sectionName(key: string, customSections: readonly CustomSection[
 }
 
 /** Whether a sidebar layout keeps a section in its sidebar, whatever its place in the order: skills, languages, and custom sections drawn like them. */
-export function inSidebar(key: string, customSections: readonly CustomSection[]): boolean {
+export function inSidebar(key: string, customSections: readonly Pick<CustomSection, "id" | "format">[]): boolean {
   return key === "skills" || key === "languages" || customSections.some((section) => customKey(section.id) === key && section.format === "INLINE");
 }
 

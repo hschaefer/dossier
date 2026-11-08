@@ -15,7 +15,7 @@ import type { PreparedResume } from "@/lib/document-prep";
 import { PhotoPosition } from "@/generated/prisma/enums";
 import { citationSpans } from "@/lib/citation";
 import type { ResumeContent } from "@/lib/resume-content";
-import { customKey, sectionHeading as resumeSectionHeading, shownSections } from "@/lib/resume-sections";
+import { customKey, inSidebar, sectionHeading as resumeSectionHeading, shownSections } from "@/lib/resume-sections";
 import { skillLine } from "@/lib/skill-groups";
 import { unitsToPoints, unitsToTwips } from "./geometry";
 
@@ -92,7 +92,6 @@ function headerText(ctx: DocContext, prepared: PreparedResume, color: { name: st
       children: runsFor(ctx, content.name, {
         role: "head",
         weight: resolved.name.weight,
-        optical: "display",
         units: resolved.name.size,
         color: color.name,
         characterSpacing: Math.round(-0.01 * unitsToPoints(resolved.name.size, ctx.paper) * 20),
@@ -532,30 +531,30 @@ function sideHeadingRows(ctx: DocContext, sections: readonly Section[], gap: num
 export async function resumeChildren(ctx: DocContext, prepared: PreparedResume): Promise<FileChild[]> {
   const { content, resolved } = prepared;
   const width = bodyWidth(ctx);
-  const drawn: Record<string, Section | undefined> = {
-    summary: summarySections(ctx, prepared)[0],
-    experience: experienceSections(ctx, prepared, width)[0],
-    volunteering: experienceSections(ctx, prepared, width, "volunteering")[0],
-    projects: projectSections(ctx, prepared, width)[0],
-    education: educationSections(ctx, prepared, width)[0],
-    certifications: certificationSections(ctx, prepared, width)[0],
-    publications: publicationSections(ctx, prepared)[0],
-    references: referenceSections(ctx, prepared, width)[0],
-    skills: skillsSection(ctx, prepared)[0],
-    languages: languagesSection(ctx, prepared)[0],
+  // Render only visible sections: constructing runs also registers fonts for embedding.
+  const builders: Record<string, () => Section | undefined> = {
+    summary: () => summarySections(ctx, prepared)[0],
+    experience: () => experienceSections(ctx, prepared, width)[0],
+    volunteering: () => experienceSections(ctx, prepared, width, "volunteering")[0],
+    projects: () => projectSections(ctx, prepared, width)[0],
+    education: () => educationSections(ctx, prepared, width)[0],
+    certifications: () => certificationSections(ctx, prepared, width)[0],
+    publications: () => publicationSections(ctx, prepared)[0],
+    references: () => referenceSections(ctx, prepared, width)[0],
+    skills: () => skillsSection(ctx, prepared)[0],
+    languages: () => languagesSection(ctx, prepared)[0],
   };
-  for (const section of content.customSections) drawn[customKey(section.id)] = customSection(ctx, section, width);
-  const order = shownSections(prepared.sections, Object.keys(drawn).filter((key) => drawn[key]));
-  const sections = order.map((key) => ({ ...drawn[key]!, title: resumeSectionHeading(prepared.sections, key, drawn[key]!.title) }));
-  // As in the preview, only skills, languages and INLINE custom sections go
-  // in the sidebar; contacts and the sidebar photo always stay at its top.
-  const isSidebar = (key: string) => key === "skills" || key === "languages" || content.customSections.some((section) => customKey(section.id) === key && section.format === "INLINE");
-  const main = sections.filter((_, index) => !isSidebar(order[index]));
-  const sidebar = [...contactSection(ctx, prepared), ...sections.filter((_, index) => isSidebar(order[index]))];
+  for (const section of content.customSections) builders[customKey(section.id)] = () => customSection(ctx, section, width);
+  const sections = shownSections(prepared.sections, Object.keys(builders)).flatMap((key) => {
+    const section = builders[key]();
+    return section ? [{ ...section, key, title: resumeSectionHeading(prepared.sections, key, section.title) }] : [];
+  });
 
   const header = await headerBlocks(ctx, prepared);
 
   if (resolved.split) {
+    const main = sections.filter((section) => !inSidebar(section.key, content.customSections));
+    const sidebar = [...contactSection(ctx, prepared), ...sections.filter((section) => inSidebar(section.key, content.customSections))];
     const gap = twipsIn(ctx.paper, resolved.density.gap);
     const photo = resolved.photo.position === PhotoPosition.SIDEBAR ? await photoImage(ctx, content.photo, content.name, "sidebar") : null;
     const sidebarRows = sectionGroupRows(ctx, sidebar, gap);

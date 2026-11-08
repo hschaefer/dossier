@@ -71,13 +71,13 @@ export class FontCollector {
   constructor(private readonly headKey: string, private readonly bodyKey: string) {}
 
   /** The family for a role at a weight, and whether Word must slant it. */
-  face(role: FontRole, weight: number, italic = false, optical: "text" | "display" = "text") {
-    return this.query(role === "head" ? this.headKey : this.bodyKey, weight, italic, optical);
+  face(role: FontRole, weight: number, italic = false) {
+    return this.query(role === "head" ? this.headKey : this.bodyKey, weight, italic);
   }
 
   /** The family for a manifest key (a theme font or a script fallback). */
-  query(key: string, weight: number, italic = false, optical: "text" | "display" = "text") {
-    const query: FontQuery = { key, weight, style: italic ? "italic" : "normal", optical };
+  query(key: string, weight: number, italic = false) {
+    const query: FontQuery = { key, weight, style: italic ? "italic" : "normal" };
     this.queries.push(query);
     return wordFont(query);
   }
@@ -117,9 +117,6 @@ export const bidi = (ctx: DocContext) => (ctx.dir === "rtl" ? true : undefined);
 /** The theme's body size in Word's half-points. */
 export const bodyHalfPoints = (ctx: DocContext) => unitsToHalfPoints(ctx.resolved.density.fontSize, ctx.paper);
 
-/** A size in page units as Word's half-points. */
-export const halfPointsIn = (paper: PaperSize, units: number) => unitsToHalfPoints(units, paper);
-
 /** A length in page units as twips. */
 export const twipsIn = (paper: PaperSize, units: number) => unitsToTwips(units, paper);
 
@@ -156,7 +153,6 @@ export type RunStyle = {
   role?: FontRole;
   weight?: number;
   italic?: boolean;
-  optical?: "text" | "display";
   /** The font size in page units; the body size when left out. */
   units?: number;
   color?: string;
@@ -258,7 +254,7 @@ export function runsFor(ctx: DocContext, text: string, style: RunStyle = {}): Te
   text.split("\n").forEach((line, lineIndex) => {
     let first = true;
     for (const chunk of scriptChunks(line, ctx, role)) {
-      const resolved = ctx.fonts.query(chunk.key, style.weight ?? 400, style.italic ?? false, style.optical ?? "text");
+      const resolved = ctx.fonts.query(chunk.key, style.weight ?? 400, style.italic ?? false);
       const rtl = style.ltr ? false : chunk.rtl;
       const joined = chunk.rtl || chunk.key === SCRIPT_FONT_KEYS.devanagari;
       runs.push(

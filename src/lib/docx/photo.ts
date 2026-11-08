@@ -25,9 +25,8 @@ type Sharp = typeof import("sharp").default;
 let sharpModule: Promise<Sharp | null> | undefined;
 
 /**
- * sharp, loaded on first use. It is a Next dependency already (image
- * optimisation), but a deployment without it still exports: the photo then
- * keeps Word's square crop instead of failing the document.
+ * Load sharp for masks and WebP conversion. If unavailable, JPEG/PNG photos
+ * keep Word's rectangular crop and unconvertible WebP photos are omitted.
  */
 function loadSharp(): Promise<Sharp | null> {
   sharpModule ??= import("sharp").then(
@@ -56,17 +55,23 @@ export async function photoImage(ctx: DocContext, src: string | null, name: stri
   let data: Uint8Array = Buffer.from(match[2], "base64");
   let type = TYPES[match[1]];
   let masked = false;
-  const sharp = clipped ? await loadSharp() : null;
+  const sharp = clipped || match[1] === "webp" ? await loadSharp() : null;
   if (sharp) {
     try {
-      // Enough pixels for 300 dpi on paper, so a masked PNG stays small.
-      const printWidth = Math.round((unitsToPoints(width, ctx.paper) / 72) * 300);
-      data = await maskedPhoto(sharp, data, shape === PhotoShape.CIRCLE ? "circle" : "rounded", ROUNDED_RADIUS / width, printWidth);
-      type = "png";
-      masked = true;
+      if (match[1] === "webp") {
+        data = await sharp(data).png().toBuffer();
+        type = "png";
+      }
+      if (clipped) {
+        // Enough pixels for 300 dpi on paper, so a masked PNG stays small.
+        const printWidth = Math.round((unitsToPoints(width, ctx.paper) / 72) * 300);
+        data = await maskedPhoto(sharp, data, shape === PhotoShape.CIRCLE ? "circle" : "rounded", ROUNDED_RADIUS / width, printWidth);
+        type = "png";
+        masked = true;
+      }
     } catch {
-      // A photo sharp cannot read keeps Word's square crop rather than
-      // disappearing from the document.
+      // Keep a Word-compatible image if masking fails. Failed WebP conversion
+      // leaves no compatible type and is omitted below.
     }
   }
   // JPEG and PNG are the formats Word's drawing ML accepts directly; WebP is
@@ -119,12 +124,10 @@ async function maskedPhoto(
   return await sharp(square).composite([{ input: mask, blend: "dest-in" }]).png({ compressionLevel: 9 }).toBuffer();
 }
 
-/** A photo above the name: its own centred paragraph, with the theme's gap below it. */
+/** A photo above the name follows the header's alignment; a sidebar photo stays at its start. */
 export function photoParagraph(ctx: DocContext, image: ImageRun, after = 8): Paragraph {
   return new Paragraph({
-    // Above the name the photo is centred on its own line; the sidebar's sits
-    // at the column's start.
-    alignment: ctx.resolved.photo.position === PhotoPosition.ABOVE_NAME ? AlignmentType.CENTER : undefined,
+    alignment: ctx.resolved.photo.position === PhotoPosition.ABOVE_NAME && ctx.resolved.centered ? AlignmentType.CENTER : undefined,
     bidirectional: bidi(ctx),
     spacing: { before: 0, after: twipsIn(ctx.paper, after) },
     children: [image],

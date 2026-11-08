@@ -141,8 +141,8 @@ const letter = (id: string) =>
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=";
 /** A real 48×64 (3:4) PNG, so the circle and rounded shapes can be masked. */
 const PHOTO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAABACAIAAADTQmMRAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAdklEQVRoge3YQQ3AQBBC0XrCE55wWxE9TA8vWQETAh+yT7pfvef8gjhoFCoPRcp2jp8A4yhUHoqU7RxCMdBGofJQpGw4NGCs6ohynfnR+2kWA20UKg9FyoZDA8aqjijXmR+952EMtFGoPBQp2zmE4id/FOpXD72Yi1jTt+7dxwAAAABJRU5ErkJggg==";
-/** RIFF…WEBP… bytes; docx has no WebP drawing, so this must be left out, not crash. */
-const WEBP = `data:image/webp;base64,${Buffer.from("RIFF0000WEBPVP8 0000000000", "binary").toString("base64")}`;
+/** A WebP signature with invalid image data, to exercise failed conversion. */
+const CORRUPT_WEBP = `data:image/webp;base64,${Buffer.from("RIFF0000WEBPVP8 0000000000", "binary").toString("base64")}`;
 
 const photoProfile = (src: string): ProfileData => ({ ...profile, photo: { src, onResumes: true } });
 
@@ -203,6 +203,31 @@ describe("renderResumeDocx", () => {
     const single = plain(xml(unzip(await renderResumeDocx(prepareResume({ ...input, layout: ThemeLayout.SINGLE }))), "word/document.xml"));
     expect(single.indexOf("ENTRIES heading")).toBeLessThan(single.indexOf("INLINE heading"));
     expect(single).not.toContain("Contact");
+  });
+
+  it.each(["editorial", "modern", "folio"])("does not embed fonts used only by hidden sections in %s", async (id) => {
+    const hiddenProfile = {
+      ...expandedProfile,
+      basics: { ...expandedProfile.basics, summary: "测试中文" },
+      skills: [{ id: "hidden-skill", name: "こんにちは", group: "" }],
+      customSections: expandedProfile.customSections.map((section) => ({
+        ...section,
+        items: section.items.map((item) => ({ ...item, title: "नमस्ते" })),
+      })),
+    };
+    const input = { theme: theme(id), profile: hiddenProfile, paper: PaperSize.A4 };
+    const visible = unzip(await renderResumeDocx(prepareResume(input)));
+    const hidden = unzip(await renderResumeDocx(prepareResume({
+      ...input,
+      sections: { order: [], off: ["summary", "skills", ...hiddenProfile.customSections.map((section) => customKey(section.id))] },
+    })));
+    for (const family of ["Dossier Chinese", "Dossier Japanese", "Dossier Devanagari"]) {
+      expect(xml(visible, "word/fontTable.xml")).toContain(family);
+      expect(xml(hidden, "word/fontTable.xml")).not.toContain(family);
+    }
+    const text = plain(xml(hidden, "word/document.xml"));
+    for (const hiddenText of ["测试中文", "こんにちは", "नमस्ते"]) expect(text).not.toContain(hiddenText);
+    expect(text).toContain("Senior <Designer>");
   });
 
   it("exports tailored new sections rather than their original profile text", async () => {
@@ -490,8 +515,38 @@ describe("photos and scripts", () => {
     }
   });
 
-  it("omits a WebP photo without crashing the package", async () => {
-    const prepared = prepareResume({ theme: theme("modern"), profile: photoProfile(WEBP), paper: PaperSize.A4 });
+  it.each(["SQUARE", "PORTRAIT", "CIRCLE", "ROUNDED"] as const)("converts a valid WebP photo for the %s shape", async (shape) => {
+    const webp = `data:image/webp;base64,${(await sharp(Buffer.from(PHOTO.split(",")[1], "base64")).webp().toBuffer()).toString("base64")}`;
+    const prepared = prepareResume({
+      theme: { ...theme("editorial"), photoShape: shape },
+      profile: photoProfile(webp), paper: PaperSize.A4,
+    });
+    const files = unzip(await renderResumeDocx(prepared));
+    const media = Object.keys(files).filter((name) => name.startsWith("word/media/"));
+    expect(media).toHaveLength(1);
+    expect(media[0]).toMatch(/\.png$/);
+    const { width, height, format } = await sharp(Buffer.from(files[media[0]])).metadata();
+    expect(format).toBe("png");
+    expect(width).toBe(48);
+    expect(height).toBe(shape === "CIRCLE" || shape === "ROUNDED" ? 48 : 64);
+    const rect = xml(files, "word/document.xml").match(/<a:srcRect[^>]*>/)?.[0] ?? "";
+    expect(rect).toContain(shape === "SQUARE" ? 't="12500"' : "<a:srcRect/>");
+  });
+
+  it.each(["LEFT", "CENTER"] as const)("aligns an above-name photo with the %s header", async (align) => {
+    const prepared = prepareResume({
+      theme: { ...theme("editorial"), align, photoPosition: "ABOVE_NAME" },
+      profile: photoProfile(PHOTO), paper: PaperSize.A4,
+    });
+    const document = xml(unzip(await renderResumeDocx(prepared)), "word/document.xml");
+    const imageParagraph = document.match(/<w:p[ >][\s\S]*?<\/w:p>/g)?.find((paragraph) => paragraph.includes("<w:drawing>"));
+    expect(imageParagraph).toBeDefined();
+    if (align === "CENTER") expect(imageParagraph).toContain('<w:jc w:val="center"/>');
+    else expect(imageParagraph).not.toContain('<w:jc w:val="center"/>');
+  });
+
+  it("omits a corrupt WebP photo without crashing the package", async () => {
+    const prepared = prepareResume({ theme: theme("modern"), profile: photoProfile(CORRUPT_WEBP), paper: PaperSize.A4 });
     const files = unzip(await renderResumeDocx(prepared));
     const document = xml(files, "word/document.xml");
 

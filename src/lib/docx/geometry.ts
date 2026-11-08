@@ -39,9 +39,6 @@ export function unitsToHalfPoints(units: number, paper: PaperSize): number {
   return Math.round(unitsToPoints(units, paper) * 2);
 }
 
-/** A font size in points as DOCX half-points. */
-export const pointsToHalfPoints = (points: number): number => Math.round(points * 2);
-
 /**
  * One CSS line box in twips, from its line-height and font size. Word's own
  * "multiple" spacing is a multiple of the font's height, not of the size

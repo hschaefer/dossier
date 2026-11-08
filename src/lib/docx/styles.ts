@@ -43,7 +43,6 @@ export function headingTextStyle(ctx: DocContext): RunStyle {
   return {
     role: "head",
     weight: heading.weight,
-    optical: "display",
     units: heading.size,
     color: ctx.resolved.accent,
     allCaps: heading.uppercase,
