@@ -119,8 +119,9 @@ describe("Documents settings (E10-3)", () => {
   it("inserts file name tokens at the cursor and previews the name", async () => {
     const user = userEvent.setup();
     open();
+    const input = screen.getByLabelText("Document file name") as HTMLInputElement;
+    expect(input).toHaveAccessibleDescription("The format you download supplies the extension. PDF downloads keep their names.");
     expect(screen.getByRole("status")).toHaveTextContent("Jane Doe – Ledgerly – Resume.pdf");
-    const input = screen.getByLabelText("PDF file name") as HTMLInputElement;
     input.setSelectionRange(0, 0);
     await user.click(screen.getByRole("button", { name: "{date} Download date" }));
     expect(input).toHaveValue("{date}{name} – {company} – {doc}");

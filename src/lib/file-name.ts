@@ -1,6 +1,7 @@
 import { DocumentKind } from "@/generated/prisma/enums";
 
-// File names for downloaded PDFs (SET-8), from the pattern in Settings.
+// File names for downloaded documents (SET-8), from the pattern in Settings.
+// The format picks the extension; the pattern stays the same for every one.
 
 /** The tokens a pattern can use, with what they stand for (Settings shows these). */
 export const FILE_NAME_TOKENS = [
@@ -29,7 +30,12 @@ export type FileNameContext = {
   date: Date;
 };
 
-/** Longer names are cut to this many characters, which leaves room for ".pdf" on any file system. */
+/** The formats a document downloads as; the extension is added after the pattern. */
+export type DocumentFormat = "pdf" | "docx";
+
+export const FILE_EXTENSIONS: Record<DocumentFormat, string> = { pdf: ".pdf", docx: ".docx" };
+
+/** Longer names are cut to this many characters, which leaves room for ".docx" on any file system. */
 export const MAX_FILE_NAME_LENGTH = 120;
 
 // Not allowed in file names on Windows, macOS or Linux, plus control characters.
@@ -45,11 +51,12 @@ const pad = (value: number) => String(value).padStart(2, "0");
 const cleanUp = (text: string) => text.replace(INVALID, " ").replace(/\s+/g, " ").replace(DANGLING, "");
 
 /**
- * "{name} – {company} – {doc}" → "Jane Doe – Ledgerly – Resume.pdf".
- * Unknown tokens stay as typed; a token without a value takes one of its
- * separators with it, so the base resume gives "Jane Doe – Resume.pdf".
+ * "{name} – {company} – {doc}" → "Jane Doe – Ledgerly – Resume.pdf", or
+ * ".docx" for Word. Unknown tokens stay as typed; a token without a value
+ * takes one of its separators with it, so the base resume gives
+ * "Jane Doe – Resume.pdf".
  */
-export function resolveFileName(pattern: string, context: FileNameContext): string {
+export function resolveFileName(pattern: string, context: FileNameContext, format: DocumentFormat = "pdf"): string {
   const name = context.name.trim();
   const values: Record<string, string> = {
     "{name}": name,
@@ -80,7 +87,7 @@ export function resolveFileName(pattern: string, context: FileNameContext): stri
   }
   if (!base) base = "untitled";
   if (RESERVED.test(base)) base = `${base}_`;
-  return `${base}.pdf`;
+  return `${base}${FILE_EXTENSIONS[format]}`;
 }
 
 /** Percent-encodes for RFC 5987, which also reserves ' ( ) and *. */

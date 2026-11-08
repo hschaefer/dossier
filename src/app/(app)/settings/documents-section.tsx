@@ -191,7 +191,8 @@ export function DocumentsSection({
         <div className="flex flex-col gap-2.5 sm:col-span-2">
           <Input
             ref={pattern}
-            label="PDF file name"
+            label="Document file name"
+            hint="The format you download supplies the extension. PDF downloads keep their names."
             inputClassName="font-mono text-[13.5px]"
             spellCheck={false}
             value={settings.fileNamePattern}

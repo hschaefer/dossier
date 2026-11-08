@@ -8,6 +8,7 @@ import { useEffect, useId, useOptimistic, useRef, useState, useTransition, type 
 import { plainUnit, type UnitRenderer } from "@/components/documents/document-page";
 import { DocumentPreview } from "@/components/documents/document-preview";
 import { DownloadPdfButton } from "@/components/documents/download-pdf-button";
+import { DownloadSplitButton } from "@/components/documents/download-split-button";
 import { TailoredLetter, TailoredResume } from "@/components/documents/tailored-documents";
 import { toast, toastResult } from "@/components/toast";
 import { Button } from "@/components/ui/button";
@@ -645,6 +646,10 @@ export function ApplicationView({
   const viewed = (document: DocumentKind) => (viewing?.document === document ? viewing : null);
   const notes = activity.filter((entry) => entry.kind === "note").length;
   const waiting = gmail?.emails.filter((email) => email.direction === "INCOMING" && !email.handled).length ?? 0;
+  // The document on screen; the Job posting, Email and Notes tabs export the resume (E8-8).
+  const downloadDoc = tab === "letter" && letter ? "letter" : "resume";
+  const downloadLabel = downloadDoc === "letter" ? "cover letter" : "tailored resume";
+  const documentOnScreen = (tab === "resume" && resume) || (tab === "letter" && letter);
 
   return (
     // Wide enough for the refine panel beside the documents, the page fills the
@@ -681,16 +686,25 @@ export function ApplicationView({
               </Link>
             )}
             <StatusControl id={application.id} status={application.status} interviewAt={application.nextInterviewAt} timeZone={timeZone} />
-            {(resume || letter) && (
-              // The document on screen; from the Job posting tab, the resume (E8-8).
-              <DownloadPdfButton
-                variant="secondary"
-                href={`/api/pdf?doc=${tab === "letter" ? "letter" : "resume"}&application=${application.id}`}
-                progress={`Rendering your ${tab === "letter" ? "cover letter" : "tailored resume"} as a PDF…`}
-              >
-                Download PDF
-              </DownloadPdfButton>
-            )}
+            {(resume || letter) &&
+              // Only the document tabs offer Word; other tabs keep the PDF-only action.
+              (documentOnScreen ? (
+                <DownloadSplitButton
+                  variant="secondary"
+                  pdfHref={`/api/pdf?doc=${downloadDoc}&application=${application.id}`}
+                  wordHref={`/api/docx?doc=${downloadDoc}&application=${application.id}`}
+                  pdfProgress={`Rendering your ${downloadLabel} as a PDF…`}
+                  wordProgress={`Preparing your ${downloadLabel} as a Word document…`}
+                />
+              ) : (
+                <DownloadPdfButton
+                  variant="secondary"
+                  href={`/api/pdf?doc=${downloadDoc}&application=${application.id}`}
+                  progress={`Rendering your ${downloadLabel} as a PDF…`}
+                >
+                  Download PDF
+                </DownloadPdfButton>
+              ))}
             <ApplicationMenu id={application.id} archived={application.archived} />
           </>
         }

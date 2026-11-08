@@ -69,6 +69,22 @@ describe("resolveFileName", () => {
   it("avoids names Windows reserves", () => {
     expect(resolveFileName("{company}", { ...ledgerly, company: "CON" })).toBe("CON_.pdf");
   });
+
+  it("gives Word downloads the same stem and a .docx extension", () => {
+    expect(resolveFileName(DEFAULT, ledgerly, "docx")).toBe("Jane Doe – Ledgerly – Resume.docx");
+    expect(resolveFileName(DEFAULT, { ...ledgerly, doc: "COVER_LETTER" }, "docx")).toBe(
+      "Jane Doe – Ledgerly – Cover letter.docx",
+    );
+    expect(resolveFileName("{name} {team}", ledgerly, "docx")).toBe("Jane Doe {team}.docx");
+    expect(resolveFileName("", ledgerly, "docx")).toBe("untitled.docx");
+    expect(resolveFileName("{company}", { ...ledgerly, company: "CON" }, "docx")).toBe("CON_.docx");
+    expect(resolveFileName("{name}", { ...ledgerly, name: "Zoë Müller" }, "docx")).toBe("Zoë Müller.docx");
+  });
+
+  it("keeps literal extension-like text and adds the format's own extension", () => {
+    expect(resolveFileName("{name}.pdf", ledgerly, "docx")).toBe("Jane Doe.pdf.docx");
+    expect(resolveFileName("{name}.docx", ledgerly)).toBe("Jane Doe.docx.pdf");
+  });
 });
 
 describe("contentDisposition", () => {

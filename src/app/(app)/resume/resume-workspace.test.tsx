@@ -94,6 +94,13 @@ describe("ResumeWorkspace", () => {
     expect(screen.getByRole("article", { name: "Resume" })).toHaveTextContent("Jane Doe");
   });
 
+  it("offers Word beside the PDF download", async () => {
+    const user = userEvent.setup();
+    render(<ResumeWorkspace {...props} />);
+    await user.click(screen.getByRole("button", { name: "More export options" }));
+    expect(screen.getByRole("menuitem", { name: /Word \(\.docx\)/ })).toBeInTheDocument();
+  });
+
   it("points to the profile while it's empty, and only then (E11-4)", () => {
     const empty = { ...props.profile, basics: { ...props.profile.basics, name: "" }, skills: [], experience: [], projects: [], education: [] };
     const { unmount } = render(<ResumeWorkspace {...props} profile={empty} />);
