@@ -62,7 +62,7 @@
       "file": "word/newsreader_italic/text-400-italic.ttf",
       "source": "newsreader/Newsreader-Italic.woff2",
       "sourceSha256": "a65a080adf143bcabe1cd778481ebd85e9bd2fcb71846b9cbf24a6deb1f874d7",
-      "sha256": "222a8e94ea9e48d22dda1f8d1485c5ce5e793a3b03c7f30d4e5c66e3e385dd42",
+      "sha256": "5db0bb5256c0f2bf851f36b4ec2b0b5b5e12931518a33ab08a1fbf9f4da580e2",
       "fsType": 0,
       "embedding": "editable"
     },
@@ -75,7 +75,7 @@
       "file": "word/newsreader_italic/text-500-italic.ttf",
       "source": "newsreader/Newsreader-MediumItalic.woff2",
       "sourceSha256": "ee6d5f27a57ca97b2ff3890d88f7fcce850a1f8abc8f027de6c1b48679b8e502",
-      "sha256": "6c2209c7cc2e8828cffd460897cb89b85a42be9547327abadfe87d3744b2351e",
+      "sha256": "ab559a8dd0274413f7bb9da7170e7c62391a52fe8fbae41936ce22d9a044f0c1",
       "fsType": 0,
       "embedding": "editable"
     },
@@ -88,7 +88,7 @@
       "file": "word/newsreader_italic/text-600-italic.ttf",
       "source": "newsreader/Newsreader-SemiBoldItalic.woff2",
       "sourceSha256": "cc81d7405eb8972b684afedabf6cdc111f4e1eb815c2a68774c0ff936125e130",
-      "sha256": "8a6174985cc50726003d3107361814543e00cb106642abb4e64e77be231dc39a",
+      "sha256": "c7245a164c28b723fcf875381f0660bed20dc4b76722c7bcdefa89685823df96",
       "fsType": 0,
       "embedding": "editable"
     },
@@ -101,7 +101,7 @@
       "file": "word/newsreader_italic/text-700-italic.ttf",
       "source": "newsreader/Newsreader-BoldItalic.woff2",
       "sourceSha256": "108b0c5497071298ee3cb86368afdb4e2d106d2ad83816c67085694f8a49c2c2",
-      "sha256": "526e1a6b592cfae38cf6c281f1a6c3f54577aedd3730d2286167ac77737a7a07",
+      "sha256": "eb6fb1665cf613515d58c7f41e87abdfad0b37dea3e055ac83e84377ab8e0584",
       "fsType": 0,
       "embedding": "editable"
     },

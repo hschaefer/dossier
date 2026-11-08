@@ -166,6 +166,9 @@ export function demoResumeUnits(
   ];
 }
 
+/** The date on the prototype's Ledgerly cover letter. */
+export const demoLetterDate = new Date(Date.UTC(2026, 8, 27));
+
 /** The prototype's cover letter for Ledgerly, one unit per paragraph. */
 export function demoLetterUnits(): Unit[] {
   return sample.ledgerly.letter.map((paragraph, index) => ({ id: `paragraph:${index + 1}`, ...paragraph }));

@@ -5,7 +5,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { CoverLetterDocument } from "@/components/documents/cover-letter-document";
 import { ResumeDocument } from "@/components/documents/resume-document";
 import { verifySession } from "@/lib/auth/session";
-import { demoLetterUnits, demoProfile, demoResumeUnits } from "@/lib/demo-profile";
+import { demoLetterDate, demoLetterUnits, demoProfile, demoResumeUnits } from "@/lib/demo-profile";
 import { prisma } from "@/lib/prisma";
 import { loadProfile } from "@/lib/profile-data";
 import { loadSettings } from "@/lib/settings-data";
@@ -41,6 +41,13 @@ export default async function DevDocumentsPage({ searchParams }: PageProps<"/dev
           <a className="underline" href={mine ? "/dev/documents" : "/dev/documents?profile=mine"}>
             Show {mine ? "the demo profile" : "your profile"}
           </a>
+        </p>
+        <p className="text-muted">
+          For a Word comparison,{" "}
+          <a className="underline" href="/api/dev/word-samples" download>
+            download a Word document and Chromium PDF for every theme
+          </a>{" "}
+          (from the current profile), with a script that converts the Word files in desktop Word.
         </p>
       </header>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(420px,1fr))] gap-8">
@@ -78,7 +85,7 @@ export default async function DevDocumentsPage({ searchParams }: PageProps<"/dev
                 company="Ledgerly"
                 location="Amsterdam"
                 tone="WARM"
-                date={new Date(Date.UTC(2026, 8, 27))}
+                date={demoLetterDate}
                 dateFormat={settings.dateFormat}
               />
             </Preview>
@@ -91,7 +98,7 @@ export default async function DevDocumentsPage({ searchParams }: PageProps<"/dev
                 company="Ledgerly"
                 location="Amsterdam"
                 tone="WARM"
-                date={new Date(Date.UTC(2026, 8, 27))}
+                date={demoLetterDate}
                 dateFormat={settings.dateFormat}
               />
             </Preview>

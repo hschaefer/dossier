@@ -58,6 +58,11 @@ next-env.d.ts
 /playwright-report/
 /test-results/
 
+# Local Word/PDF comparison exports can contain profile text.
+/dossier-samples-*/
+/dossier-samples-*.zip
+/dossier-word-samples-*
+
 # The desktop app's dependencies and what it builds
 /desktop/dist
 /desktop/build-server
