@@ -90,7 +90,7 @@ describe("ResumeWorkspace", () => {
     expect(screen.getByRole("link", { name: "Edit profile" })).toHaveAttribute("href", "/profile");
     expect(screen.getByRole("link", { name: "Download PDF" })).toHaveAttribute("href", "/api/pdf?doc=base");
     expect(previewLabel()).toBe("Modern");
-    expect(screen.getByText("A4 · 1 page")).toBeInTheDocument();
+    expect(screen.getByText("PDF preview · A4 · 1 page")).toBeInTheDocument();
     expect(screen.getByRole("article", { name: "Resume" })).toHaveTextContent("Jane Doe");
   });
 
@@ -117,7 +117,7 @@ describe("ResumeWorkspace", () => {
 
   it("names the paper size", () => {
     render(<ResumeWorkspace {...props} paper="LETTER" />);
-    expect(screen.getByText("US Letter · 1 page")).toBeInTheDocument();
+    expect(screen.getByText("PDF preview · US Letter · 1 page")).toBeInTheDocument();
   });
 
   it("includes references when Settings says so", () => {
@@ -257,11 +257,14 @@ describe("Fit to one page (public issue 69)", () => {
     vi.mocked(setFitBaseResume).mockResolvedValue({ ok: true, data: null });
     render(<ResumeWorkspace {...props} />);
     const toggle = screen.getByRole("switch", { name: "Fit to one page" });
-    expect(toggle).toHaveAccessibleDescription("Off. The resume takes the pages it needs.");
+    expect(toggle).toHaveAccessibleDescription("Off. PDF and Word use the theme’s normal spacing.");
     await user.click(toggle);
     expect(setFitBaseResume).toHaveBeenCalledWith({ fit: true });
     // jsdom lays nothing out, so the preview counts one page and nothing is squeezed.
-    expect(toggle).toHaveAccessibleDescription("On. It fits as it is.");
+    expect(toggle).toHaveAccessibleDescription("On. The PDF fits as it is. Word uses the same formatting; page breaks may differ.");
+    expect(screen.getByText(/PDF preview · A4/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More export options" }));
+    expect(screen.getByRole("menuitem", { name: /Word \(\.docx\)/ })).toHaveTextContent("same compact formatting");
   });
 
   it("switches back when the choice isn't saved", async () => {

@@ -20,9 +20,13 @@ rendering in Word for Mac, web/mobile Word, LibreOffice or Google Docs.
   certifications, volunteering, custom sections, references and photo rules.
   Sent applications use the same frozen profile, theme, paper and date
   settings as their PDF.
-- **Fit to one page is PDF-only.** Word uses the theme's normal spacing and
-  does not trim content or attempt to measure Word pages. A PDF page limit
-  does not guarantee a matching Word page count.
+- **Fit to one page shares formatting between PDF and Word.** For the base
+  resume, PDF measurement selects the first fitting compression level (or
+  the tightest available), and Word uses the same margins, gaps, line height
+  and body size. Nothing is removed. With fitting off, Word uses normal theme
+  spacing and does not need PDF rendering. Word pages are not measured, so a
+  one-page PDF does not guarantee a one-page Word document. The preview is
+  labelled PDF preview; the Word export menu explains the pagination caveat.
 - Layout tables preserve sidebars, side headings and timeline layouts.
   Long tables may paginate differently from the PDF's independent columns.
 - Circle and rounded-square photos are masked locally with `sharp`. If the

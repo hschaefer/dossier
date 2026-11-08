@@ -6,6 +6,7 @@ import { prepareLetter, prepareResume } from "@/lib/document-prep";
 import { docxDownload } from "@/lib/docx/download";
 import { renderLetterDocx, renderResumeDocx } from "@/lib/docx/render";
 import { resolveFileName } from "@/lib/file-name";
+import { renderBaseResumePdf } from "@/lib/pdf/base-resume";
 import { loadProfile, loadProfileName } from "@/lib/profile-data";
 import { loadSettings } from "@/lib/settings-data";
 import { loadTheme } from "@/lib/theme-data";
@@ -37,6 +38,8 @@ export const GET = route(async (request) => {
 
   if (doc === "base") {
     const [profile, theme] = await Promise.all([loadProfile(), loadTheme(settings.baseThemeId)]);
+    // Match PDF's compact formatting; Word still determines its own page breaks.
+    const fit = settings.fitBaseResume ? (await renderBaseResumePdf(true)).fit : 0;
     const prepared = prepareResume({
       theme: theme ?? BUILT_IN_THEMES[0],
       profile,
@@ -44,8 +47,7 @@ export const GET = route(async (request) => {
       language: settings.resumeLanguage,
       includeReferences: settings.includeRefs,
       sections: settings.resumeSections,
-      // PDF fitting measures Chromium pages; editable Word uses normal spacing.
-      fit: 0,
+      fit,
     });
     return docxDownload(
       await renderResumeDocx(prepared),

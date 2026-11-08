@@ -16,7 +16,10 @@ import { useFileDownload } from "./download-pdf-button";
 
 /** Hover help and the menu's explanation of what a Word download changes. */
 export const WORD_EXPORT_NOTE =
-  "Editable Word document with embedded fonts. Line and page breaks may differ from the PDF. PDF fit-to-one-page does not apply to Word.";
+  "Editable Word document with embedded fonts. Line and page breaks may differ from the PDF.";
+
+const COMPACT_WORD_EXPORT_NOTE =
+  "Editable, with the same compact formatting. Page breaks may differ in Word.";
 
 /**
  * Download a document as a split button: the main part exports the PDF, the
@@ -29,6 +32,7 @@ export function DownloadSplitButton({
   wordHref,
   pdfProgress = "Rendering your PDF on the server. It'll download in a moment.",
   wordProgress = "Preparing your Word document…",
+  compactFormatting = false,
   variant = "primary",
   size = "md",
   children = "Download PDF",
@@ -39,13 +43,21 @@ export function DownloadSplitButton({
   pdfProgress?: string;
   /** The toast while the Word document prepares, e.g. "Preparing your cover letter as a Word document…". */
   wordProgress?: string;
+  /** The base resume shares PDF's fit-to-one-page formatting with Word. */
+  compactFormatting?: boolean;
   variant?: ButtonVariant;
   size?: ButtonSize;
   /** The main button's label; it exports the PDF. */
   children?: ReactNode;
 }) {
   const pdf = useFileDownload({ href: pdfHref, held: true, fallbackName: "document.pdf", progress: pdfProgress });
-  const word = useFileDownload({ href: wordHref, held: false, fallbackName: "document.docx", progress: wordProgress });
+  const word = useFileDownload({
+    href: wordHref,
+    held: false,
+    fallbackName: "document.docx",
+    progress: compactFormatting ? "Preparing Word with compact formatting…" : wordProgress,
+  });
+  const wordNote = compactFormatting ? COMPACT_WORD_EXPORT_NOTE : WORD_EXPORT_NOTE;
   const busy = pdf.busy || word.busy;
   // A synchronous lock also covers clicks before React renders the busy state.
   const running = useRef(false);
@@ -93,10 +105,10 @@ export function DownloadSplitButton({
               <span className="text-xs text-muted">The document as previewed</span>
             </span>
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={busy} onSelect={() => void download("word")} title={WORD_EXPORT_NOTE}>
+          <DropdownMenuItem disabled={busy} onSelect={() => void download("word")} title={wordNote}>
             <span className="flex flex-col gap-0.5">
               <span>Word (.docx)</span>
-              <span className="text-xs text-muted">{WORD_EXPORT_NOTE}</span>
+              <span className="text-xs text-muted">{wordNote}</span>
             </span>
           </DropdownMenuItem>
         </DropdownMenuContent>

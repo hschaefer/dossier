@@ -51,7 +51,20 @@ describe("DownloadSplitButton", () => {
     const word = screen.getByRole("menuitem", { name: /Word \(\.docx\)/ });
     expect(word).toHaveAttribute("title", WORD_EXPORT_NOTE);
     expect(word).toHaveTextContent("Line and page breaks may differ from the PDF.");
-    expect(word).toHaveTextContent("PDF fit-to-one-page does not apply to Word.");
+    expect(word).not.toHaveTextContent("PDF fit-to-one-page does not apply to Word.");
+  });
+
+  it("explains shared compact formatting without promising Word's page count", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("PK")));
+    renderSplit({ compactFormatting: true });
+    await user.click(screen.getByRole("button", { name: "More export options" }));
+    const word = screen.getByRole("menuitem", { name: /Word \(\.docx\)/ });
+    expect(word).toHaveTextContent("Editable, with the same compact formatting.");
+    expect(word).toHaveTextContent("Page breaks may differ in Word.");
+    await user.click(word);
+    expect(toast).toHaveBeenCalledWith("Preparing Word with compact formatting…");
+    await waitFor(() => expect(click).toHaveBeenCalled());
   });
 
   it("exports Word from the menu with its own progress and file name", async () => {

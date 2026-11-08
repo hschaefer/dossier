@@ -218,14 +218,14 @@ export function ResumeWorkspace({
             <Link href="/profile" className={buttonClassName("secondary")}>
               Edit profile
             </Link>
-            <DownloadSplitButton pdfHref="/api/pdf?doc=base" wordHref="/api/docx?doc=base" />
+            <DownloadSplitButton pdfHref="/api/pdf?doc=base" wordHref="/api/docx?doc=base" compactFormatting={fitToPage} />
           </div>
         }
       />
       <div className="@container flex flex-1 flex-wrap border-t border-line">
         <DocumentPreview
           label={theme.name}
-          meta={(pages) => `${PAPER_SIZES[paper].label} · ${pages} ${pages === 1 ? "page" : "pages"}${fit > 0 ? " · squeezed to fit" : ""}`}
+            meta={(pages) => `PDF preview · ${PAPER_SIZES[paper].label} · ${pages} ${pages === 1 ? "page" : "pages"}${fit > 0 ? " · squeezed to fit" : ""}`}
           onPages={onPages}
           notice={(pages) =>
             empty ? (
@@ -260,12 +260,12 @@ export function ResumeWorkspace({
             label="Fit to one page"
             description={
               !fitToPage
-                ? "Off. The resume takes the pages it needs."
+                ? "Off. PDF and Word use the theme’s normal spacing."
                 : fit === 0
-                  ? "On. It fits as it is."
+                  ? "On. The PDF fits as it is. Word uses the same formatting; page breaks may differ."
                   : pages > 1
-                    ? "On, but it runs over one page even at its tightest. Shorten it, or leave a section out under Sections."
-                    : `On. Tighter spacing${fit >= 3 ? " and smaller type" : fit >= 2 ? " and lines" : ""}, so it fits; the PDF does the same.`
+                    ? "Still exceeds one page at the tightest spacing. Shorten your resume or hide a section. PDF and Word share this formatting; Word’s page breaks may differ."
+                    : `On. Tighter spacing${fit >= 3 ? " and smaller type" : fit >= 2 ? " and lines" : ""}, shared by PDF and Word. Nothing is removed. Word’s page breaks may differ.`
             }
             checked={fitToPage}
             onCheckedChange={(next) => void toggleFit(next)}

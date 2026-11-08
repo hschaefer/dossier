@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getSession } from "@/lib/auth/session";
 import { DOCX_CONTENT_TYPE } from "@/lib/docx/download";
 import { renderLetterDocx, renderResumeDocx } from "@/lib/docx/render";
+import { renderPdf } from "@/lib/pdf/render";
 import { prisma } from "@/lib/prisma";
 import { loadProfile, loadProfileName } from "@/lib/profile-data";
 import { settingsFromRows } from "@/lib/settings";
@@ -14,6 +15,7 @@ import { BUILT_IN_THEMES, resolveTheme, withoutSidebar } from "@/lib/themes";
 import { GET } from "./route";
 
 vi.mock("@/lib/auth/session", () => ({ getSession: vi.fn() }));
+vi.mock("@/lib/pdf/render", () => ({ renderPdf: vi.fn() }));
 vi.mock("@/lib/docx/render", () => ({
   renderResumeDocx: vi.fn(async () => new Uint8Array([80, 75, 3, 4])),
   renderLetterDocx: vi.fn(async () => new Uint8Array([80, 75, 3, 4])),
@@ -78,6 +80,7 @@ const application = {
 };
 
 beforeEach(() => {
+  vi.mocked(renderPdf).mockReset().mockResolvedValue(new TextEncoder().encode("%PDF /Type /Page "));
   vi.mocked(getSession).mockResolvedValue({ persistent: false, issuedAt: new Date(), expiresAt: new Date() });
   vi.mocked(loadProfileName).mockResolvedValue("Jane Doe");
   vi.mocked(loadProfile).mockClear().mockResolvedValue(profile as never);
@@ -99,6 +102,7 @@ describe("GET /api/docx", () => {
     );
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([80, 75, 3, 4]));
+    expect(renderPdf).not.toHaveBeenCalled();
   });
 
   it("downloads a tailored resume and cover letter, named for the application", async () => {
@@ -157,17 +161,56 @@ describe("GET /api/docx", () => {
     }));
   });
 
-  it("passes base sections through and uses normal spacing even when PDF fitting is on", async () => {
+  it("passes base sections through and shares PDF's first fitting level", async () => {
     const sections = { order: ["skills", "summary"], off: ["education"], titles: { skills: "Expertise" } };
     vi.mocked(loadSettings).mockResolvedValue(settingsFromRows([
       { key: "resumeSections", value: JSON.stringify(sections) },
       { key: "fitBaseResume", value: "true" },
     ]));
+    vi.mocked(renderPdf).mockImplementation(async (path) => new TextEncoder().encode(
+      `%PDF ${"/Type /Page ".repeat(path === "/print/base?fit=2" ? 1 : 2)}`,
+    ));
     await get("?doc=base");
     expect(renderResumeDocx).toHaveBeenCalledWith(expect.objectContaining({
       sections,
+      resolved: resolveTheme(BUILT_IN_THEMES[0], undefined, 2),
+    }));
+    expect(vi.mocked(renderPdf).mock.calls.map(([path]) => path)).toEqual(["/print/base", "/print/base?fit=1", "/print/base?fit=2"]);
+  });
+
+  it("keeps normal formatting when PDF already fits, and uses the tightest level when it cannot fit", async () => {
+    vi.mocked(loadSettings).mockResolvedValue(settingsFromRows([{ key: "fitBaseResume", value: "true" }]));
+    await get("?doc=base");
+    expect(renderResumeDocx).toHaveBeenLastCalledWith(expect.objectContaining({
       resolved: resolveTheme(BUILT_IN_THEMES[0], undefined, 0),
     }));
+    expect(renderPdf).toHaveBeenCalledTimes(1);
+
+    vi.mocked(renderPdf).mockClear().mockResolvedValue(new TextEncoder().encode("%PDF /Type /Page /Type /Page "));
+    await get("?doc=base");
+    expect(renderResumeDocx).toHaveBeenLastCalledWith(expect.objectContaining({
+      resolved: resolveTheme(BUILT_IN_THEMES[0], undefined, 4),
+    }));
+    expect(renderPdf).toHaveBeenCalledTimes(5);
+  });
+
+  it("does not apply base fitting to tailored resumes or letters", async () => {
+    vi.mocked(loadSettings).mockResolvedValue(settingsFromRows([{ key: "fitBaseResume", value: "true" }]));
+    await get("?doc=resume&application=app1");
+    await get("?doc=letter&application=app1");
+    expect(renderPdf).not.toHaveBeenCalled();
+  });
+
+  it("does not silently export unfitted Word when PDF measurement fails", async () => {
+    vi.mocked(loadSettings).mockResolvedValue(settingsFromRows([{ key: "fitBaseResume", value: "true" }]));
+    vi.mocked(renderPdf).mockRejectedValueOnce(new Error("Chromium unavailable"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((await get("?doc=base")).status).toBe(500);
+      expect(renderResumeDocx).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("uses application sections rather than base sections, including renamed and disabled sections", async () => {
