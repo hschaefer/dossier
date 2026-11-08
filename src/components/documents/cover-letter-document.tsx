@@ -1,13 +1,10 @@
 import { Fragment } from "react";
 
-import { ThemeLayout, type DateFormat, type PaperSize, type Tone } from "@/generated/prisma/enums";
 import { SIGN_OFF_UNIT, type Unit } from "@/lib/application-data";
-import { documentLabels } from "@/lib/document-labels";
-import { documentLanguage } from "@/lib/document-language";
-import { defaultFrame, isFrameUnit, withFrame, type FrameUnitId } from "@/lib/letter-frame";
+import type { DateFormat, PaperSize, Tone } from "@/generated/prisma/enums";
+import { prepareLetter } from "@/lib/document-prep";
 import type { Basics } from "@/lib/profile";
-import { resolveTheme, type ThemeData } from "@/lib/themes";
-import { TONES } from "@/lib/tones";
+import type { ThemeData } from "@/lib/themes";
 
 import { ContactLine, DocumentPage, plainUnit, type UnitRenderer } from "./document-page";
 import styles from "./document.module.css";
@@ -33,13 +30,6 @@ type CoverLetterDocumentProps = {
   renderUnit?: UnitRenderer;
 };
 
-/** The contact items in a typed contact line ("a · b · c"). */
-const contactsIn = (line: string) =>
-  line
-    .split(/\s+·\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
 /**
  * A cover letter (APP-10) in the theme's fonts, colours and spacing, always
  * in a single column: sender, date, recipient, greeting, paragraphs, sign-off
@@ -60,48 +50,39 @@ export function CoverLetterDocument({
   language,
   renderUnit = plainUnit,
 }: CoverLetterDocumentProps) {
-  const resolved = resolveTheme(theme, ThemeLayout.SINGLE);
-  const parts = withFrame(units, defaultFrame({ basics, company, location, date, dateFormat, labels: documentLabels(language) }));
-  const text = (id: FrameUnitId) => parts.find((unit) => unit.id === id)?.text.trim() ?? "";
-  const paragraphs = parts.filter((unit) => !isFrameUnit(unit.id) && unit.id !== SIGN_OFF_UNIT);
-  const closing = signOff ?? parts.find((unit) => unit.id === SIGN_OFF_UNIT)?.text.trim() ?? TONES[tone].signOff;
-  const [name = "", ...contactLines] = text("sender").split("\n");
-  const { lang, dir } = documentLanguage(language, paragraphs.map((unit) => unit.text).join(" "));
+  const letter = prepareLetter({ theme, paper, basics, units, company, location, tone, date, dateFormat, signOff, language });
 
   return (
-    <DocumentPage theme={resolved} paper={paper} lang={lang} dir={dir} label="Cover letter" className={styles.letter}>
+    <DocumentPage theme={letter.resolved} paper={paper} lang={letter.lang} dir={letter.dir} label="Cover letter" className={styles.letter}>
       {renderUnit({
         id: "sender",
         className: styles.sender,
         children: (
           <>
-            <p className={styles.senderName}>{name.trim()}</p>
-            {contactLines.map((line, index) => contactsIn(line).length > 0 && <ContactLine key={index} items={contactsIn(line)} />)}
+            <p className={styles.senderName}>{letter.senderName}</p>
+            {letter.contactLines.map((items, index) => (
+              <ContactLine key={index} items={items} />
+            ))}
           </>
         ),
       })}
-      {renderUnit({ id: "date", className: styles.letterDate, children: text("date") })}
+      {renderUnit({ id: "date", className: styles.letterDate, children: letter.date })}
       {renderUnit({
         id: "recipient",
         className: styles.recipient,
-        children: text("recipient")
-          .split("\n")
-          .map((line, index) => line.trim() && <p key={index}>{line.trim()}</p>),
+        children: letter.recipient.map((line, index) => (
+          <p key={index}>{line}</p>
+        )),
       })}
-      {renderUnit({ id: "greeting", className: styles.greeting, children: text("greeting") })}
+      {renderUnit({ id: "greeting", className: styles.greeting, children: letter.greeting })}
       <div className={styles.paragraphs}>
-        {paragraphs.map(
-          (unit) =>
-            unit.text.trim() && (
-              <Fragment key={unit.id}>
-                {renderUnit({ id: unit.id, className: styles.paragraph, children: unit.text.trim() })}
-              </Fragment>
-            ),
-        )}
+        {letter.paragraphs.map((unit) => (
+          <Fragment key={unit.id}>{renderUnit({ id: unit.id, className: styles.paragraph, children: unit.text })}</Fragment>
+        ))}
       </div>
       <div className={styles.signOff}>
-        {renderUnit({ id: SIGN_OFF_UNIT, children: closing })}
-        {renderUnit({ id: "signature", children: text("signature") })}
+        {renderUnit({ id: SIGN_OFF_UNIT, children: letter.closing })}
+        {renderUnit({ id: "signature", children: letter.signature })}
       </div>
     </DocumentPage>
   );

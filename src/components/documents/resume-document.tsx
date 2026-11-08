@@ -3,13 +3,12 @@ import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { CitationText } from "@/components/citation";
 import { PhotoPosition, PhotoShape, type PaperSize, type ThemeLayout } from "@/generated/prisma/enums";
 import { cn } from "@/lib/cn";
-import { documentLabels } from "@/lib/document-labels";
-import { documentLanguage } from "@/lib/document-language";
+import { prepareResume } from "@/lib/document-prep";
 import type { ProfileData } from "@/lib/profile";
-import { resumeContent, type ResumeContent, type ResumeOptions, type ResumeRole } from "@/lib/resume-content";
+import type { ResumeContent, ResumeOptions, ResumeRole } from "@/lib/resume-content";
 import { customKey, DEFAULT_SECTION_LAYOUT, inSidebar, sectionHeading, type SectionLayout, shownSections } from "@/lib/resume-sections";
 import { skillLine } from "@/lib/skill-groups";
-import { PHOTO_SHAPES, resolveTheme, type ThemeData } from "@/lib/themes";
+import { PHOTO_SHAPES, type ThemeData } from "@/lib/themes";
 
 import { Contact, ContactLine, DocumentPage, DocumentSection, plainUnit, type UnitRenderer } from "./document-page";
 import styles from "./document.module.css";
@@ -30,17 +29,6 @@ type ResumeDocumentProps = ResumeOptions & {
   fit?: number;
 };
 
-/** Enough of a resume's own words to tell its script and direction. */
-const sampleText = (content: ResumeContent) =>
-  [
-    content.name,
-    content.headline,
-    content.summary,
-    ...[...content.experience, ...content.volunteering].flatMap((role) => [role.role, ...role.bullets]),
-    ...content.projects.flatMap((project) => [project.name, ...project.bullets]),
-    ...content.customSections.flatMap((section) => section.items.flatMap((item) => [item.title, ...item.bullets])),
-  ].join(" ");
-
 /**
  * A resume (RES-1, RES-6, APP-4), the same markup for the preview and the
  * PDF. The base resume passes the profile alone; a tailored resume also
@@ -50,10 +38,7 @@ const sampleText = (content: ResumeContent) =>
  * `renderUnit` with its unit id, for editing it in place (E8-3).
  */
 export function ResumeDocument({ theme, profile, paper, layout, sections = DEFAULT_SECTION_LAYOUT, language, renderUnit = plainUnit, fit = 0, ...options }: ResumeDocumentProps) {
-  const resolved = resolveTheme(theme, layout, fit);
-  const labels = documentLabels(language);
-  const content = resumeContent(profile, options, labels);
-  const { lang, dir } = documentLanguage(language, sampleText(content));
+  const { resolved, labels, content, lang, dir } = prepareResume({ theme, profile, paper, layout, sections, fit, language, ...options });
   const { shape, position } = resolved.photo;
   const photo = (size: "header" | "sidebar", className?: string) =>
     content.photo && <ResumePhoto key="photo" src={content.photo} name={content.name} shape={shape} size={size} className={className} />;
